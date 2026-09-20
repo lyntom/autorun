@@ -1630,6 +1630,18 @@ static void put_process_string( WCHAR **cursor, UNICODE_STRING *string, const ch
 
 extern const unsigned char wine_nx_dplayx_dll[];
 extern const size_t wine_nx_dplayx_dll_size;
+extern const unsigned char wine_nx_oledlg_dll[];
+extern const size_t wine_nx_oledlg_dll_size;
+extern const unsigned char wine_nx_d3d8_dll[];
+extern const size_t wine_nx_d3d8_dll_size;
+extern const unsigned char wine_nx_d3dx9_30_dll[];
+extern const size_t wine_nx_d3dx9_30_dll_size;
+
+struct wine_nx_embedded_dll {
+    const char *name;
+    const unsigned char *data;
+    const size_t *size_ptr;
+};
 
 static void wine_nx_ensure_syswow64_dlls(void)
 {
@@ -1637,24 +1649,34 @@ static void wine_nx_ensure_syswow64_dlls(void)
         WINE_ROOT "/drive_c/windows/syswow64",
         WINE_ROOT "/drive_c/windows/system32"
     };
-    for (size_t i = 0; i < sizeof(dest_dirs)/sizeof(dest_dirs[0]); i++)
+    static const struct wine_nx_embedded_dll dlls[] = {
+        { "dplayx.dll", wine_nx_dplayx_dll, &wine_nx_dplayx_dll_size },
+        { "oledlg.dll", wine_nx_oledlg_dll, &wine_nx_oledlg_dll_size },
+        { "d3d8.dll", wine_nx_d3d8_dll, &wine_nx_d3d8_dll_size },
+        { "d3dx9_30.dll", wine_nx_d3dx9_30_dll, &wine_nx_d3dx9_30_dll_size },
+    };
+    for (size_t d = 0; d < sizeof(dest_dirs)/sizeof(dest_dirs[0]); d++)
     {
-        char dll_path[512];
-        struct stat st;
-
-        snprintf( dll_path, sizeof(dll_path), "%s/dplayx.dll", dest_dirs[i] );
-        if (stat( dll_path, &st ) != 0 || st.st_size == 0)
+        for (size_t k = 0; k < sizeof(dlls)/sizeof(dlls[0]); k++)
         {
-            mkdir( WINE_ROOT "/drive_c", 0777 );
-            mkdir( WINE_ROOT "/drive_c/windows", 0777 );
-            mkdir( dest_dirs[i], 0777 );
+            char dll_path[512];
+            struct stat st;
+            size_t dll_size = *dlls[k].size_ptr;
 
-            FILE *f = fopen( dll_path, "wb" );
-            if (f)
+            snprintf( dll_path, sizeof(dll_path), "%s/%s", dest_dirs[d], dlls[k].name );
+            if (stat( dll_path, &st ) != 0 || st.st_size == 0)
             {
-                fwrite( wine_nx_dplayx_dll, 1, wine_nx_dplayx_dll_size, f );
-                fclose( f );
-                log_line( "[AUTODEPLOY] deployed missing %s (%zu bytes)", dll_path, wine_nx_dplayx_dll_size );
+                mkdir( WINE_ROOT "/drive_c", 0777 );
+                mkdir( WINE_ROOT "/drive_c/windows", 0777 );
+                mkdir( dest_dirs[d], 0777 );
+
+                FILE *f = fopen( dll_path, "wb" );
+                if (f)
+                {
+                    fwrite( dlls[k].data, 1, dll_size, f );
+                    fclose( f );
+                    log_line( "[AUTODEPLOY] deployed missing %s (%zu bytes)", dll_path, dll_size );
+                }
             }
         }
     }
