@@ -80,7 +80,9 @@ SIMS2_DLLS = ['gdiplus']
 VULKAN_DLLS = 'vulkan-1 winevulkan'.split()
 # Stronghold Crusader, Age of Empires and older DirectPlay titles require dplayx.
 DIRECTPLAY_DLLS = 'dplayx dpnet'.split()
-GAME_DLLS = NFS_DLLS + FALLOUT_DLLS + SOURCE_DLLS + HALO_DLLS + SIMS2_DLLS + VULKAN_DLLS + DIRECTPLAY_DLLS
+# PES 2013 and its settings launcher require oledlg, d3d8, d3dx9_30, winhttp.
+PES_DLLS = 'oledlg d3d8 d3dx9_30 winhttp'.split()
+GAME_DLLS = NFS_DLLS + FALLOUT_DLLS + SOURCE_DLLS + HALO_DLLS + SIMS2_DLLS + VULKAN_DLLS + DIRECTPLAY_DLLS + PES_DLLS
 pe = probe / 'build-wine-wow64-pe'
 toolchain = probe / 'toolchains/llvm-mingw-20260505-ucrt-macos-universal/bin'
 env = dict(os.environ, PATH=f'{toolchain}:/opt/homebrew/opt/bison/bin:' + os.environ['PATH'])
