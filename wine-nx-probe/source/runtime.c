@@ -1636,6 +1636,12 @@ extern const unsigned char wine_nx_d3d8_dll[];
 extern const size_t wine_nx_d3d8_dll_size;
 extern const unsigned char wine_nx_d3dx9_30_dll[];
 extern const size_t wine_nx_d3dx9_30_dll_size;
+extern const unsigned char wine_nx_userenv_dll[];
+extern const size_t wine_nx_userenv_dll_size;
+extern const unsigned char wine_nx_winspool_drv[];
+extern const size_t wine_nx_winspool_drv_size;
+extern const unsigned char wine_nx_ddraw_dll[];
+extern const size_t wine_nx_ddraw_dll_size;
 
 struct wine_nx_embedded_dll {
     const char *name;
@@ -1654,6 +1660,9 @@ static void wine_nx_ensure_syswow64_dlls(void)
         { "oledlg.dll", wine_nx_oledlg_dll, &wine_nx_oledlg_dll_size },
         { "d3d8.dll", wine_nx_d3d8_dll, &wine_nx_d3d8_dll_size },
         { "d3dx9_30.dll", wine_nx_d3dx9_30_dll, &wine_nx_d3dx9_30_dll_size },
+        { "userenv.dll", wine_nx_userenv_dll, &wine_nx_userenv_dll_size },
+        { "winspool.drv", wine_nx_winspool_drv, &wine_nx_winspool_drv_size },
+        { "ddraw.dll", wine_nx_ddraw_dll, &wine_nx_ddraw_dll_size },
     };
     for (size_t d = 0; d < sizeof(dest_dirs)/sizeof(dest_dirs[0]); d++)
     {
@@ -1735,6 +1744,122 @@ static HANDLE runtime_open_std_file( const char *path, ACCESS_MASK access, ULONG
     return handle;
 }
 
+static void wine_nx_ensure_pes2013_registry( const char *target )
+{
+    static const char reg_file[] = WINE_ROOT "/system.reg";
+    struct stat st;
+    int has_entry = 0;
+    int exists = (stat( reg_file, &st ) == 0 && st.st_size > 0);
+
+    if (exists)
+    {
+        FILE *f = fopen( reg_file, "r" );
+        if (f)
+        {
+            char line[256];
+            while (fgets( line, sizeof(line), f ))
+            {
+                if (strstr( line, "KONAMI\\\\PES2013" ))
+                {
+                    has_entry = 1;
+                    break;
+                }
+            }
+            fclose( f );
+        }
+    }
+
+    if (!has_entry)
+    {
+        char win_dir[512] = "C:\\\\Pro Evolution Soccer 2013\\\\";
+        const char *c_pos = target ? strstr( target, "/drive_c/" ) : NULL;
+        if (c_pos)
+        {
+            const char *rel = c_pos + 9;
+            const char *last_slash = strrchr( rel, '/' );
+            if (last_slash && last_slash > rel)
+            {
+                size_t dlen = last_slash - rel;
+                char tmp[256];
+                if (dlen < sizeof(tmp))
+                {
+                    memcpy( tmp, rel, dlen );
+                    tmp[dlen] = 0;
+                    size_t wpos = snprintf( win_dir, sizeof(win_dir), "C:\\\\" );
+                    for (size_t i = 0; i < dlen && wpos + 4 < sizeof(win_dir); i++)
+                    {
+                        if (tmp[i] == '/')
+                        {
+                            win_dir[wpos++] = '\\';
+                            win_dir[wpos++] = '\\';
+                        }
+                        else win_dir[wpos++] = tmp[i];
+                    }
+                    win_dir[wpos++] = '\\';
+                    win_dir[wpos++] = '\\';
+                    win_dir[wpos] = 0;
+                }
+            }
+        }
+
+        FILE *f = fopen( reg_file, exists ? "a" : "w" );
+        if (f)
+        {
+            if (!exists)
+            {
+                fputs( "WINE REGISTRY Version 2\n"
+                       ";; All keys relative to \\Machine\n\n", f );
+            }
+            fprintf( f, "\n"
+                        "[Software\\\\KONAMI\\\\PES2013]\n"
+                        "\"code\"=\"SHVY-3LE9-TMNH-7K5L-JN73\"\n"
+                        "\"installdir\"=\"%s\"\n"
+                        "\"version\"=\"1.00.0000\"\n"
+                        "\n"
+                        "[Software\\\\Wow6432Node\\\\KONAMI\\\\PES2013]\n"
+                        "\"code\"=\"SHVY-3LE9-TMNH-7K5L-JN73\"\n"
+                        "\"installdir\"=\"%s\"\n"
+                        "\"version\"=\"1.00.0000\"\n", win_dir, win_dir );
+            fclose( f );
+            log_line( "[AUTOCONFIG] ensured PES 2013 registry entries (installdir=%s) in system.reg", win_dir );
+        }
+    }
+}
+
+static void wine_nx_ensure_pes2013_setup( const char *target )
+{
+    char dir_buf[512];
+    const char *last_slash = target ? strrchr( target, '/' ) : NULL;
+    if (last_slash)
+    {
+        size_t dlen = last_slash - target;
+        if (dlen < sizeof(dir_buf))
+        {
+            memcpy( dir_buf, target, dlen );
+            dir_buf[dlen] = 0;
+
+            /* Rename intro SFD video files to .bak to prevent hanging CRI Sofdec on Wine-NX */
+            static const char *sfd_files[] = {
+                "pes12ci.sfd",
+                "pes13pv.sfd"
+            };
+            for (size_t i = 0; i < sizeof(sfd_files)/sizeof(sfd_files[0]); i++)
+            {
+                char sfd_src[512], sfd_bak[512];
+                struct stat st;
+
+                snprintf( sfd_src, sizeof(sfd_src), "%s/img/%s", dir_buf, sfd_files[i] );
+                snprintf( sfd_bak, sizeof(sfd_bak), "%s/img/%s.bak", dir_buf, sfd_files[i] );
+                if (stat( sfd_src, &st ) == 0)
+                {
+                    if (rename( sfd_src, sfd_bak ) == 0)
+                        log_line( "[FIX] renamed %s -> %s.bak to prevent video freeze", sfd_src, sfd_files[i] );
+                }
+            }
+        }
+    }
+}
+
 static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *target,
                                                                    UNICODE_STRING *main_nt_name,
                                                                    char *dos_path, size_t dos_path_size )
@@ -1806,12 +1931,43 @@ static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *t
             read_key_map( keys_path );
         else if (own == 0) log_line( "[NXINPUT] %s: Autorun's controls, not its own", target );
     }
+
     /* Its own Box64 options, read when its first x86 code runs: SPEED2.box64.txt. */
     {
         extern char wine_nx_box64_options_path[] __attribute__((weak));
 
         if (&wine_nx_box64_options_path && target[1] != ':')
+        {
             launcher_sibling_path( target, ".box64.txt", wine_nx_box64_options_path, 512 );
+            struct stat bst;
+            if (stat( wine_nx_box64_options_path, &bst ) != 0)
+            {
+                if (string_contains_ignore_case( target, "pes2013" ) ||
+                    string_contains_ignore_case( target, "setting" ) ||
+                    string_contains_ignore_case( target, "rld.dll" ))
+                {
+                    FILE *bf = fopen( wine_nx_box64_options_path, "w" );
+                    if (bf)
+                    {
+                        fputs( "BOX64_DYNAREC_BIGBLOCK=0\n"
+                               "BOX64_DYNAREC_STRONGMEM=1\n"
+                               "BOX64_DYNAREC_SAFEFLAGS=2\n"
+                               "BOX64_DYNAREC_CALLRET=0\n"
+                               "BOX64_DYNAREC_FASTNAN=0\n"
+                               "BOX64_DYNAREC_FASTROUND=0\n", bf );
+                        fclose( bf );
+                        log_line( "[AUTOCONFIG] created %s for self-modifying code compatibility", wine_nx_box64_options_path );
+                    }
+                }
+            }
+        }
+    }
+
+    if (string_contains_ignore_case( target, "pes2013" ) ||
+        string_contains_ignore_case( target, "setting" ))
+    {
+        wine_nx_ensure_pes2013_registry( target );
+        wine_nx_ensure_pes2013_setup( target );
     }
 
     /* If game directory contains unicows.dll, rename it so it won't crash MSLU on Wine */
@@ -3472,6 +3628,7 @@ int main( int argc, char **argv )
             threadClose( &stall_watch_thread );
         else stall_watch_running = 1;
     }
+    wine_nx_ensure_pes2013_registry( NULL );
     wine_nx_ensure_syswow64_dlls();
     /* First, before anything else: which build this is and which file it was
      * started from. Without it a log from an older NRO on the card reads just

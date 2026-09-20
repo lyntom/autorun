@@ -295,7 +295,17 @@ static unsigned int horizon_registry_init(void)
             "WINE REGISTRY Version 2\n"
             "[Software\\\\Classes\\\\CLSID\\\\{BCDE0395-E52F-467C-8E3D-C4579291692E}\\\\InprocServer32]\n"
             "@=\"mmdevapi.dll\"\n"
-            "\"ThreadingModel\"=\"Both\"\n";
+            "\"ThreadingModel\"=\"Both\"\n"
+            "\n"
+            "[Software\\\\KONAMI\\\\PES2013]\n"
+            "\"code\"=\"SHVY-3LE9-TMNH-7K5L-JN73\"\n"
+            "\"installdir\"=\"C:\\\\Pro Evolution Soccer 2013\\\\\"\n"
+            "\"version\"=\"1.00.0000\"\n"
+            "\n"
+            "[Software\\\\Wow6432Node\\\\KONAMI\\\\PES2013]\n"
+            "\"code\"=\"SHVY-3LE9-TMNH-7K5L-JN73\"\n"
+            "\"installdir\"=\"C:\\\\Pro Evolution Soccer 2013\\\\\"\n"
+            "\"version\"=\"1.00.0000\"\n";
         static const char user_seed[] =
             "WINE REGISTRY Version 2\n[Software\\\\Wine\\\\Drivers]\n\"Audio\"=\"nxaudio\"\n";
         unsigned int errors = 0;
