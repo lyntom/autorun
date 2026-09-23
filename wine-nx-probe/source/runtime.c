@@ -12,6 +12,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <dirent.h>
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
@@ -1749,6 +1750,7 @@ static void wine_nx_ensure_pes2013_registry( const char *target )
     static const char reg_file[] = WINE_ROOT "/system.reg";
     struct stat st;
     int has_entry = 0;
+    int has_vram = 0;
     int exists = (stat( reg_file, &st ) == 0 && st.st_size > 0);
 
     if (exists)
@@ -1760,16 +1762,15 @@ static void wine_nx_ensure_pes2013_registry( const char *target )
             while (fgets( line, sizeof(line), f ))
             {
                 if (strstr( line, "KONAMI\\\\PES2013" ))
-                {
                     has_entry = 1;
-                    break;
-                }
+                if (strstr( line, "VideoMemorySize" ))
+                    has_vram = 1;
             }
             fclose( f );
         }
     }
 
-    if (!has_entry)
+    if (!has_entry || !has_vram)
     {
         char win_dir[512] = "C:\\\\Pro Evolution Soccer 2013\\\\";
         const char *c_pos = target ? strstr( target, "/drive_c/" ) : NULL;
@@ -1810,18 +1811,28 @@ static void wine_nx_ensure_pes2013_registry( const char *target )
                 fputs( "WINE REGISTRY Version 2\n"
                        ";; All keys relative to \\Machine\n\n", f );
             }
-            fprintf( f, "\n"
-                        "[Software\\\\KONAMI\\\\PES2013]\n"
-                        "\"code\"=\"SHVY-3LE9-TMNH-7K5L-JN73\"\n"
-                        "\"installdir\"=\"%s\"\n"
-                        "\"version\"=\"1.00.0000\"\n"
-                        "\n"
-                        "[Software\\\\Wow6432Node\\\\KONAMI\\\\PES2013]\n"
-                        "\"code\"=\"SHVY-3LE9-TMNH-7K5L-JN73\"\n"
-                        "\"installdir\"=\"%s\"\n"
-                        "\"version\"=\"1.00.0000\"\n", win_dir, win_dir );
+            if (!has_entry)
+            {
+                fprintf( f, "\n"
+                            "[Software\\\\KONAMI\\\\PES2013]\n"
+                            "\"code\"=\"SHVY-3LE9-TMNH-7K5L-JN73\"\n"
+                            "\"installdir\"=\"%s\"\n"
+                            "\"version\"=\"1.00.0000\"\n"
+                            "\n"
+                            "[Software\\\\Wow6432Node\\\\KONAMI\\\\PES2013]\n"
+                            "\"code\"=\"SHVY-3LE9-TMNH-7K5L-JN73\"\n"
+                            "\"installdir\"=\"%s\"\n"
+                            "\"version\"=\"1.00.0000\"\n", win_dir, win_dir );
+                log_line( "[AUTOCONFIG] ensured PES 2013 registry entries (installdir=%s) in system.reg", win_dir );
+            }
+            if (!has_vram)
+            {
+                fprintf( f, "\n"
+                            "[Software\\\\Wine\\\\Direct3D]\n"
+                            "\"VideoMemorySize\"=\"1024\"\n" );
+                log_line( "[AUTOCONFIG] set VideoMemorySize=1024 in system.reg" );
+            }
             fclose( f );
-            log_line( "[AUTOCONFIG] ensured PES 2013 registry entries (installdir=%s) in system.reg", win_dir );
         }
     }
 }
@@ -1838,23 +1849,180 @@ static void wine_nx_ensure_pes2013_setup( const char *target )
             memcpy( dir_buf, target, dlen );
             dir_buf[dlen] = 0;
 
-            /* Rename intro SFD video files to .bak to prevent hanging CRI Sofdec on Wine-NX */
-            static const char *sfd_files[] = {
-                "pes12ci.sfd",
-                "pes13pv.sfd"
-            };
-            for (size_t i = 0; i < sizeof(sfd_files)/sizeof(sfd_files[0]); i++)
+            /* 1. Rename ALL SFD video files to .bak to prevent hanging CRI Sofdec on Wine-NX */
+            static const char *subdirs[] = { "img", "IMG" };
+            for (size_t s = 0; s < sizeof(subdirs)/sizeof(subdirs[0]); s++)
             {
-                char sfd_src[512], sfd_bak[512];
-                struct stat st;
-
-                snprintf( sfd_src, sizeof(sfd_src), "%s/img/%s", dir_buf, sfd_files[i] );
-                snprintf( sfd_bak, sizeof(sfd_bak), "%s/img/%s.bak", dir_buf, sfd_files[i] );
-                if (stat( sfd_src, &st ) == 0)
+                char img_path[512];
+                snprintf( img_path, sizeof(img_path), "%s/%s", dir_buf, subdirs[s] );
+                DIR *d = opendir( img_path );
+                if (d)
                 {
-                    if (rename( sfd_src, sfd_bak ) == 0)
-                        log_line( "[FIX] renamed %s -> %s.bak to prevent video freeze", sfd_src, sfd_files[i] );
+                    struct dirent *ent;
+                    while ((ent = readdir( d )) != NULL)
+                    {
+                        size_t nlen = strlen( ent->d_name );
+                        if (nlen > 4 && strcasecmp( ent->d_name + nlen - 4, ".sfd" ) == 0)
+                        {
+                            char src[512], dst[512];
+                            snprintf( src, sizeof(src), "%s/%s", img_path, ent->d_name );
+                            snprintf( dst, sizeof(dst), "%s/%s.bak", img_path, ent->d_name );
+                            if (rename( src, dst ) == 0)
+                                log_line( "[FIX] renamed %s -> %s.bak to prevent Sofdec video freeze", src, ent->d_name );
+                        }
+                    }
+                    closedir( d );
                 }
+
+                /* Fallback explicit list of known PES 2013 video files */
+                static const char *known_sfds[] = {
+                    "pes12ci.sfd", "pes13ci.sfd", "pes13pv.sfd", "pes13st.sfd",
+                    "pes_topBG_E_1.sfd", "pes_topBG_E_2.sfd",
+                    "pes13cl_a.sfd", "pes13cl_b.sfd", "pes13cl_c.sfd",
+                    "pes13el_a.sfd", "pes13el_b.sfd", "pes13el_c.sfd",
+                    "pes13lb_a.sfd", "pes13sc_a.sfd"
+                };
+                for (size_t k = 0; k < sizeof(known_sfds)/sizeof(known_sfds[0]); k++)
+                {
+                    char sfd_src[512], sfd_bak[512];
+                    struct stat st;
+                    snprintf( sfd_src, sizeof(sfd_src), "%s/%s", img_path, known_sfds[k] );
+                    snprintf( sfd_bak, sizeof(sfd_bak), "%s/%s.bak", img_path, known_sfds[k] );
+                    if (stat( sfd_src, &st ) == 0 && rename( sfd_src, sfd_bak ) == 0)
+                        log_line( "[FIX] renamed %s -> %s.bak", sfd_src, known_sfds[k] );
+                }
+            }
+
+            /* 2. Check kitserver13/config.txt AND kitserver13/kload.cfg to disable stall-inducing modules */
+            static const char *kit_cfgs[] = {
+                "kitserver13/config.txt",
+                "kitserver13/kload.cfg"
+            };
+            static const char *problem_dlls[] = {
+                "dll = lodmixer", "dll=\"lodmixer\"",
+                "dll = afs2fs",   "dll=\"afs2fs\"",
+                "dll = afsio",    "dll=\"afsio\""
+            };
+            for (size_t c = 0; c < sizeof(kit_cfgs)/sizeof(kit_cfgs[0]); c++)
+            {
+                char kcfg_path[512];
+                snprintf( kcfg_path, sizeof(kcfg_path), "%s/%s", dir_buf, kit_cfgs[c] );
+                FILE *kf = fopen( kcfg_path, "r" );
+                if (kf)
+                {
+                    char kbuf[16384];
+                    size_t n = fread( kbuf, 1, sizeof(kbuf) - 1, kf );
+                    fclose( kf );
+                    kbuf[n] = 0;
+                    int changed = 0;
+                    for (size_t p = 0; p < sizeof(problem_dlls)/sizeof(problem_dlls[0]); p++)
+                    {
+                        char *lm = strstr( kbuf, problem_dlls[p] );
+                        while (lm)
+                        {
+                            if (lm == kbuf || *(lm - 1) == '\n')
+                            {
+                                size_t rest_len = strlen( lm );
+                                if (strlen( kbuf ) + 2 < sizeof(kbuf))
+                                {
+                                    memmove( lm + 2, lm, rest_len + 1 );
+                                    lm[0] = '#';
+                                    lm[1] = ' ';
+                                    changed = 1;
+                                    log_line( "[FIX] disabled %s in %s to prevent hang", problem_dlls[p], kcfg_path );
+                                }
+                            }
+                            lm = strstr( lm + 2, problem_dlls[p] );
+                        }
+                    }
+                    if (changed)
+                    {
+                        FILE *kw = fopen( kcfg_path, "w" );
+                        if (kw)
+                        {
+                            fputs( kbuf, kw );
+                            fclose( kw );
+                        }
+                    }
+                }
+            }
+
+            /* 3. Ensure pes2013.box64.txt uses STRONGMEM=1 and SAFEFLAGS=2 (essential for rld.dll SecuROM) */
+            char box64_path[512];
+            snprintf( box64_path, sizeof(box64_path), "%s/pes2013.box64.txt", dir_buf );
+            FILE *bf = fopen( box64_path, "r" );
+            int needs_box64_update = 0;
+            if (bf)
+            {
+                char bbuf[1024];
+                size_t bn = fread( bbuf, 1, sizeof(bbuf) - 1, bf );
+                fclose( bf );
+                bbuf[bn] = 0;
+                if (strstr( bbuf, "STRONGMEM=0" ) || strstr( bbuf, "SAFEFLAGS=1" ) || strstr( bbuf, "BIGBLOCK=1" ))
+                    needs_box64_update = 1;
+            }
+            else
+            {
+                needs_box64_update = 1;
+            }
+            if (needs_box64_update)
+            {
+                FILE *bw = fopen( box64_path, "w" );
+                if (bw)
+                {
+                    fputs( "BOX64_DYNAREC_BIGBLOCK=0\n"
+                           "BOX64_DYNAREC_STRONGMEM=1\n"
+                           "BOX64_DYNAREC_SAFEFLAGS=2\n"
+                           "BOX64_DYNAREC_CALLRET=0\n"
+                           "BOX64_DYNAREC_FASTNAN=0\n"
+                           "BOX64_DYNAREC_FASTROUND=0\n", bw );
+                    fclose( bw );
+                    log_line( "[FIX] restored %s with STRONGMEM=1 and SAFEFLAGS=2 for rld.dll compatibility", box64_path );
+                }
+            }
+
+            /* 4. Patch kload.dll if present to prevent recursive Direct3DCreate9 hook */
+            char kload_path[512];
+            snprintf( kload_path, sizeof(kload_path), "%s/kitserver13/kload.dll", dir_buf );
+            FILE *klf = fopen( kload_path, "r+b" );
+            if (klf)
+            {
+                if (fseek( klf, 0x2940, SEEK_SET ) == 0)
+                {
+                    unsigned char kbytes[2];
+                    if (fread( kbytes, 1, 2, klf ) == 2 && kbytes[0] == 0x74 && kbytes[1] == 0x22)
+                    {
+                        fseek( klf, 0x2940, SEEK_SET );
+                        kbytes[0] = 0xeb;
+                        fwrite( kbytes, 1, 1, klf );
+                        log_line( "[FIX] patched %s at 0x2940 (74 22 -> eb 22) to bypass D3D9 hook recursion", kload_path );
+                    }
+                }
+                fclose( klf );
+            }
+
+            /* 5. Patch pes2013.exe entry point if it has kitserver LoadLibraryA attached */
+            char pes_path[512];
+            snprintf( pes_path, sizeof(pes_path), "%s/pes2013.exe", dir_buf );
+            FILE *pef = fopen( pes_path, "r+b" );
+            if (pef)
+            {
+                if (fseek( pef, 0xff71e0, SEEK_SET ) == 0)
+                {
+                    unsigned char pbytes[11];
+                    static const unsigned char expected_ks[11] = {
+                        0x68, 0xec, 0x71, 0x6d, 0x01, 0xff, 0x15, 0xb8, 0x82, 0x3f, 0x01
+                    };
+                    if (fread( pbytes, 1, 11, pef ) == 11 && memcmp( pbytes, expected_ks, 11 ) == 0)
+                    {
+                        fseek( pef, 0xff71e0, SEEK_SET );
+                        unsigned char nops[11];
+                        memset( nops, 0x90, sizeof(nops) );
+                        fwrite( nops, 1, sizeof(nops), pef );
+                        log_line( "[FIX] patched %s at 0xff71e0 (nop'd kitserver LoadLibraryA)", pes_path );
+                    }
+                }
+                fclose( pef );
             }
         }
     }
@@ -3859,10 +4027,23 @@ int main( int argc, char **argv )
         runtime_vkd3d_version[0] = 0;
         runtime_dxvk_version[0] = 0;
         if (target[1] != ':' &&
-            launcher_program_settings_path( RUNTIME_DIR, target, settings_path, sizeof(settings_path) ) &&
-            launcher_kv_load( &kv, settings_path ) && kv.size)
+            launcher_program_settings_path( RUNTIME_DIR, target, settings_path, sizeof(settings_path) ))
         {
-            launcher_settings_read( &kv, &settings );
+            launcher_kv_load( &kv, settings_path );
+            if (string_contains_ignore_case( target, "pes2013" ))
+            {
+                char d3d_val[32];
+                if (!launcher_kv_get( &kv, "d3d", d3d_val, sizeof(d3d_val) ) &&
+                    !launcher_kv_get( &kv, "d3d9", d3d_val, sizeof(d3d_val) ))
+                {
+                    launcher_kv_set( &kv, "d3d", "dxvk" );
+                    launcher_kv_save( &kv, settings_path );
+                    log_line( "[AUTOCONFIG] enabled DXVK for PES 2013 in %s", settings_path );
+                }
+            }
+            if (kv.size)
+            {
+                launcher_settings_read( &kv, &settings );
             if (settings.verbose >= 0) wine_nx_runtime_verbose = settings.verbose;
             if (settings.profile >= 0) runtime_profile = settings.profile;
             if (settings.framebuffer >= 0) wine_nx_compositor_mode = !settings.framebuffer;
@@ -3902,6 +4083,7 @@ int main( int argc, char **argv )
 #else
                       settings.dxvk ? "Wine (DXVK needs the Vulkan runtime)" : "Wine" );
 #endif
+            }
         }
     }
 

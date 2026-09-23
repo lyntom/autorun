@@ -305,9 +305,13 @@ static unsigned int horizon_registry_init(void)
             "[Software\\\\Wow6432Node\\\\KONAMI\\\\PES2013]\n"
             "\"code\"=\"SHVY-3LE9-TMNH-7K5L-JN73\"\n"
             "\"installdir\"=\"C:\\\\Pro Evolution Soccer 2013\\\\\"\n"
-            "\"version\"=\"1.00.0000\"\n";
+            "\"version\"=\"1.00.0000\"\n"
+            "\n"
+            "[Software\\\\Wine\\\\Direct3D]\n"
+            "\"VideoMemorySize\"=\"1024\"\n";
         static const char user_seed[] =
-            "WINE REGISTRY Version 2\n[Software\\\\Wine\\\\Drivers]\n\"Audio\"=\"nxaudio\"\n";
+            "WINE REGISTRY Version 2\n[Software\\\\Wine\\\\Drivers]\n\"Audio\"=\"nxaudio\"\n"
+            "\n[Software\\\\Wine\\\\Direct3D]\n\"VideoMemorySize\"=\"1024\"\n";
         unsigned int errors = 0;
         if (horizon_reg_load( &horizon_registry, machine, machine_seed, sizeof(machine_seed) - 1, &errors ) ||
             horizon_reg_load( &horizon_registry, user, user_seed, sizeof(user_seed) - 1, &errors ) || errors)

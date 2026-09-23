@@ -23,3 +23,8 @@ wine-nx-probe/build-switch-wow64/
 /wine-nx-probe/**/__pycache__/
 
 debug
+
+OUTPUT_FOR_SWITCH/
+switch_logs/
+wine-nx-probe/build-switch-wsl/
+*.nro
