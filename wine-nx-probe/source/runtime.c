@@ -1849,7 +1849,7 @@ static void wine_nx_ensure_pes2013_setup( const char *target )
             memcpy( dir_buf, target, dlen );
             dir_buf[dlen] = 0;
 
-            /* 1. Rename ALL SFD video files to .bak to prevent hanging CRI Sofdec on Wine-NX */
+            /* 1. Restore SFD video files (.sfd.bak -> .sfd) so background menu videos (e.g. Ronaldo slide) play properly */
             static const char *subdirs[] = { "img", "IMG" };
             for (size_t s = 0; s < sizeof(subdirs)/sizeof(subdirs[0]); s++)
             {
@@ -1862,34 +1862,16 @@ static void wine_nx_ensure_pes2013_setup( const char *target )
                     while ((ent = readdir( d )) != NULL)
                     {
                         size_t nlen = strlen( ent->d_name );
-                        if (nlen > 4 && strcasecmp( ent->d_name + nlen - 4, ".sfd" ) == 0)
+                        if (nlen > 8 && strcasecmp( ent->d_name + nlen - 8, ".sfd.bak" ) == 0)
                         {
                             char src[512], dst[512];
                             snprintf( src, sizeof(src), "%s/%s", img_path, ent->d_name );
-                            snprintf( dst, sizeof(dst), "%s/%s.bak", img_path, ent->d_name );
+                            snprintf( dst, sizeof(dst), "%s/%.*s", img_path, (int)(nlen - 4), ent->d_name );
                             if (rename( src, dst ) == 0)
-                                log_line( "[FIX] renamed %s -> %s.bak to prevent Sofdec video freeze", src, ent->d_name );
+                                log_line( "[RESTORE] restored video %s", dst );
                         }
                     }
                     closedir( d );
-                }
-
-                /* Fallback explicit list of known PES 2013 video files */
-                static const char *known_sfds[] = {
-                    "pes12ci.sfd", "pes13ci.sfd", "pes13pv.sfd", "pes13st.sfd",
-                    "pes_topBG_E_1.sfd", "pes_topBG_E_2.sfd",
-                    "pes13cl_a.sfd", "pes13cl_b.sfd", "pes13cl_c.sfd",
-                    "pes13el_a.sfd", "pes13el_b.sfd", "pes13el_c.sfd",
-                    "pes13lb_a.sfd", "pes13sc_a.sfd"
-                };
-                for (size_t k = 0; k < sizeof(known_sfds)/sizeof(known_sfds[0]); k++)
-                {
-                    char sfd_src[512], sfd_bak[512];
-                    struct stat st;
-                    snprintf( sfd_src, sizeof(sfd_src), "%s/%s", img_path, known_sfds[k] );
-                    snprintf( sfd_bak, sizeof(sfd_bak), "%s/%s.bak", img_path, known_sfds[k] );
-                    if (stat( sfd_src, &st ) == 0 && rename( sfd_src, sfd_bak ) == 0)
-                        log_line( "[FIX] renamed %s -> %s.bak", sfd_src, known_sfds[k] );
                 }
             }
 

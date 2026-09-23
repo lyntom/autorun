@@ -24,7 +24,7 @@ wine-nx-probe/build-switch-wow64/
 
 debug
 
-OUTPUT_FOR_SWITCH/
+OUTPUT_FOR_SWITCH*/
 switch_logs/
 wine-nx-probe/build-switch-wsl/
 *.nro
