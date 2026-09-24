@@ -838,8 +838,6 @@ extern u64 wine_nx_xinput_last_poll;
 
 void wine_nx_leave_process( const char *why );
 void wine_nx_request_quit( const char *why );
-
-int wine_nx_swkbd_auto_enabled = 1;
 int wine_nx_swkbd_active;
 unsigned int wine_nx_swkbd_hotkey_state;
 const unsigned int wine_nx_pad_key_l_bit = 1u << WINE_NX_KEY_L;
