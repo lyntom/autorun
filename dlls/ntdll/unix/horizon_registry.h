@@ -127,8 +127,10 @@ static const unsigned short horizon_reg_symlink_value[] =
 static inline int horizon_reg_compare( const unsigned short *a, unsigned int alen,
                                        const unsigned short *b, unsigned int blen )
 {
-    unsigned int i, count = (alen < blen ? alen : blen) / 2;
+    unsigned int i, count;
 
+    if (!a || !b) return (a == b) ? (alen == blen ? 0 : alen < blen ? -1 : 1) : (!a ? -1 : 1);
+    count = (alen < blen ? alen : blen) / 2;
     for (i = 0; i < count; i++)
     {
         unsigned short ca = a[i] >= 'a' && a[i] <= 'z' ? a[i] - ('a' - 'A') : a[i];
@@ -144,22 +146,30 @@ static inline struct horizon_reg_key *horizon_reg_find_subkey( const struct hori
                                                                const unsigned short *name, unsigned int len,
                                                                unsigned int *index )
 {
-    unsigned int min = 0, max = key->subkey_count;
+    unsigned int min = 0, max;
 
+    if (!key || (!name && len))
+    {
+        if (index) *index = 0;
+        return NULL;
+    }
+    max = key->subkey_count;
     while (min < max)
     {
         unsigned int i = (min + max) / 2;
-        int res = horizon_reg_compare( key->subkeys[i]->name, key->subkeys[i]->namelen, name, len );
+        int res;
+        if (!key->subkeys || !key->subkeys[i]) break;
+        res = horizon_reg_compare( key->subkeys[i]->name, key->subkeys[i]->namelen, name, len );
 
         if (!res)
         {
-            *index = i;
+            if (index) *index = i;
             return key->subkeys[i];
         }
         if (res > 0) max = i;
         else min = i + 1;
     }
-    *index = min;
+    if (index) *index = min;
     return NULL;
 }
 
@@ -167,22 +177,30 @@ static inline struct horizon_reg_value *horizon_reg_find_value( const struct hor
                                                                 const unsigned short *name, unsigned int len,
                                                                 unsigned int *index )
 {
-    unsigned int min = 0, max = key->value_count;
+    unsigned int min = 0, max;
 
+    if (!key || (!name && len))
+    {
+        if (index) *index = 0;
+        return NULL;
+    }
+    max = key->value_count;
     while (min < max)
     {
         unsigned int i = (min + max) / 2;
-        int res = horizon_reg_compare( key->values[i].name, key->values[i].namelen, name, len );
+        int res;
+        if (!key->values) break;
+        res = horizon_reg_compare( key->values[i].name, key->values[i].namelen, name, len );
 
         if (!res)
         {
-            *index = i;
+            if (index) *index = i;
             return &key->values[i];
         }
         if (res > 0) max = i;
         else min = i + 1;
     }
-    *index = min;
+    if (index) *index = min;
     return NULL;
 }
 
@@ -299,6 +317,7 @@ static inline unsigned int horizon_reg_element( const unsigned short *name, unsi
 {
     unsigned int i;
 
+    if (!name) return 0;
     for (i = 0; i < len / 2; i++) if (name[i] == '\\') break;
     return i * 2;
 }
@@ -325,7 +344,7 @@ static inline unsigned int horizon_reg_lookup( struct horizon_reg *reg, struct h
     len &= ~1u;
     if (!key)
     {
-        if (!len || name[0] != '\\') return HORIZON_REG_PATH_SYNTAX_BAD;
+        if (!name || !len || name[0] != '\\') return HORIZON_REG_PATH_SYNTAX_BAD;
         if (len < sizeof(prefix) || horizon_reg_compare( name, sizeof(prefix), prefix, sizeof(prefix) ) ||
             (len > sizeof(prefix) && name[sizeof(prefix) / 2] != '\\'))
             return HORIZON_REG_NAME_NOT_FOUND;
@@ -333,7 +352,7 @@ static inline unsigned int horizon_reg_lookup( struct horizon_reg *reg, struct h
         name += sizeof(prefix) / 2;
         len -= sizeof(prefix);
     }
-    else if (len && name[0] == '\\') return HORIZON_REG_PATH_SYNTAX_BAD;
+    else if (len && (!name || name[0] == '\\')) return HORIZON_REG_PATH_SYNTAX_BAD;
 
     for (;;)
     {
@@ -341,7 +360,7 @@ static inline unsigned int horizon_reg_lookup( struct horizon_reg *reg, struct h
         unsigned int elem, next;
 
         if (key->flags & HORIZON_REG_FLAG_DELETED) return HORIZON_REG_KEY_DELETED;
-        while (len && name[0] == '\\')
+        while (len && name && name[0] == '\\')
         {
             name++;
             len -= 2;
@@ -354,7 +373,7 @@ static inline unsigned int horizon_reg_lookup( struct horizon_reg *reg, struct h
             unsigned int status;
 
             if (!value || value->len < 2 || links >= HORIZON_REG_MAX_LINKS ||
-                ((const unsigned short *)value->data)[0] != '\\')
+                !value->data || ((const unsigned short *)value->data)[0] != '\\')
                 return HORIZON_REG_NAME_NOT_FOUND;
             status = horizon_reg_lookup( reg, NULL, (const unsigned short *)value->data, value->len, 0,
                                          &target, links + 1 );
@@ -367,7 +386,7 @@ static inline unsigned int horizon_reg_lookup( struct horizon_reg *reg, struct h
 
         elem = horizon_reg_element( name, len );
         if (elem > HORIZON_REG_MAX_NAME) return HORIZON_REG_INVALID_PARAMETER;
-        for (next = elem; next < len && name[next / 2] == '\\'; next += 2) ;
+        for (next = elem; next < len && name && name[next / 2] == '\\'; next += 2) ;
         if (!(found = horizon_reg_find_subkey( key, name, elem, &index )))
         {
             if (next < len) return HORIZON_REG_NAME_NOT_FOUND;
@@ -470,8 +489,11 @@ static inline unsigned int horizon_reg_delete( struct horizon_reg *reg, struct h
     if (!parent || key->subkey_count) return HORIZON_REG_ACCESS_DENIED;
 
     for (i = 0; i < parent->subkey_count; i++) if (parent->subkeys[i] == key) break;
-    memmove( parent->subkeys + i, parent->subkeys + i + 1, (parent->subkey_count - i - 1) * sizeof(*parent->subkeys) );
-    parent->subkey_count--;
+    if (i < parent->subkey_count)
+    {
+        memmove( parent->subkeys + i, parent->subkeys + i + 1, (parent->subkey_count - i - 1) * sizeof(*parent->subkeys) );
+        parent->subkey_count--;
+    }
     key->parent = NULL;
     key->flags |= HORIZON_REG_FLAG_DELETED;
     horizon_reg_touch( reg, parent, HORIZON_REG_CHANGE_NAME );
@@ -494,6 +516,11 @@ static inline unsigned int horizon_reg_rename( struct horizon_reg *reg, struct h
     memcpy( copy, name, len );
 
     for (current = 0; current < parent->subkey_count; current++) if (parent->subkeys[current] == key) break;
+    if (current >= parent->subkey_count)
+    {
+        free( copy );
+        return HORIZON_REG_CANNOT_DELETE;
+    }
     if (current < index)
     {
         index--;

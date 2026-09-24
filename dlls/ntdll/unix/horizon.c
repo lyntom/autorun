@@ -13524,6 +13524,9 @@ static int horizon_server_handle_select( struct horizon_server_connection *conne
     return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
 }
 
+static __thread jmp_buf horizon_server_jmp_buf;
+static __thread volatile int horizon_server_in_handler = 0;
+
 static void *horizon_server_thread( void *param )
 {
     struct horizon_server_connection *connection = param;
@@ -13569,8 +13572,11 @@ static void *horizon_server_thread( void *param )
             }
         }
 
-        switch (header->req)
+        horizon_server_in_handler = 1;
+        if (setjmp( horizon_server_jmp_buf ) == 0)
         {
+            switch (header->req)
+            {
         case HORIZON_REQ_GET_TOKEN_SID:
             status = horizon_server_handle_registry_user( connection, message );
             break;
@@ -14061,6 +14067,16 @@ static void *horizon_server_thread( void *param )
                 status = horizon_server_write_status( connection->reply_fd, HORIZON_STATUS_NOT_IMPLEMENTED );
             break;
         }
+        }
+        else
+        {
+            wine_nx_runtime_trace( "[SERVER] recovered from fault in request handler; reporting invalid parameter" );
+            pthread_mutex_unlock( &horizon_server_objects_mutex );
+            status = HORIZON_STATUS_INVALID_PARAMETER;
+            if (connection->reply_fd != -1)
+                horizon_server_write_status( connection->reply_fd, status );
+        }
+        horizon_server_in_handler = 0;
 
         free( request_data );
         if (status) goto done;
@@ -14399,6 +14415,15 @@ void __libnx_exception_handler( ThreadExceptionDump *ctx )
         ctx->pc.x = (ULONG_PTR)longjmp;
         ntdll_get_thread_data()->jmp_buf = NULL;
         wine_nx_runtime_trace( "[EXC] returning to the __TRY handler that probed it" );
+        horizon_resume_exception( ctx );
+    }
+    if (status && horizon_server_in_handler)
+    {
+        horizon_server_in_handler = 0;
+        ctx->cpu_gprs[0].x = (ULONG_PTR)horizon_server_jmp_buf;
+        ctx->cpu_gprs[1].x = 1;
+        ctx->pc.x = (ULONG_PTR)longjmp;
+        wine_nx_runtime_trace( "[EXC] recovering server request fault via longjmp" );
         horizon_resume_exception( ctx );
     }
 #endif

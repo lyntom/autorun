@@ -400,6 +400,7 @@ static unsigned int horizon_registry_trace_name( char *out, unsigned int at, uns
 {
     unsigned int i;
 
+    if (!name) { out[at < max ? at : max - 1] = 0; return at; }
     for (i = 0; i < len / 2 && at + 7 < max; i++)
     {
         if (name[i] >= 0x20 && name[i] < 0x7f) out[at++] = (char)name[i];
@@ -482,7 +483,7 @@ static int horizon_server_handle_registry( struct horizon_server_connection *con
             name = (const void *)data;
             len = data_size;
         }
-        if ((len | classlen) & 1) { status = HORIZON_REG_INVALID_PARAMETER; goto done; }
+        if ((len | classlen) & 1 || (len && !name) || (classlen && !class)) { status = HORIZON_REG_INVALID_PARAMETER; goto done; }
         if (parent && (status = horizon_registry_key( parent, &base ))) goto done;
         if (header->req == HORIZON_REQ_CREATE_KEY)
             status = horizon_reg_create( &horizon_registry, base, name, len, attributes,

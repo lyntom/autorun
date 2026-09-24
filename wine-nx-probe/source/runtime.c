@@ -2035,8 +2035,7 @@ static void wine_nx_ensure_pes2013_setup( const char *target )
             };
             static const char *problem_dlls[] = {
                 "dll = lodmixer", "dll=\"lodmixer\"",
-                "dll = afs2fs",   "dll=\"afs2fs\"",
-                "dll = afsio",    "dll=\"afsio\""
+                "dll = speeder",  "dll=\"speeder\""
             };
             for (size_t c = 0; c < sizeof(kit_cfgs)/sizeof(kit_cfgs[0]); c++)
             {
@@ -2082,7 +2081,7 @@ static void wine_nx_ensure_pes2013_setup( const char *target )
                 }
             }
 
-            /* 3. Ensure pes2013.box64.txt uses STRONGMEM=1 and SAFEFLAGS=2 (essential for rld.dll SecuROM) */
+            /* 3. Ensure pes2013.box64.txt uses STRONGMEM=1 and SAFEFLAGS=2 with PURGE=1 */
             char box64_path[512];
             snprintf( box64_path, sizeof(box64_path), "%s/pes2013.box64.txt", dir_buf );
             FILE *bf = fopen( box64_path, "r" );
@@ -2093,7 +2092,8 @@ static void wine_nx_ensure_pes2013_setup( const char *target )
                 size_t bn = fread( bbuf, 1, sizeof(bbuf) - 1, bf );
                 fclose( bf );
                 bbuf[bn] = 0;
-                if (strstr( bbuf, "STRONGMEM=0" ) || strstr( bbuf, "SAFEFLAGS=1" ) || strstr( bbuf, "BIGBLOCK=1" ))
+                if (strstr( bbuf, "STRONGMEM=0" ) || strstr( bbuf, "SAFEFLAGS=1" ) ||
+                    strstr( bbuf, "BIGBLOCK=1" ))
                     needs_box64_update = 1;
             }
             else
@@ -2114,6 +2114,34 @@ static void wine_nx_ensure_pes2013_setup( const char *target )
                     fclose( bw );
                     log_line( "[FIX] restored %s with STRONGMEM=1 and SAFEFLAGS=2 for rld.dll compatibility", box64_path );
                 }
+            }
+
+            /* 3b. Ensure dxvk.conf exists in PES 2013 folder for maximum performance */
+            char dxvk_path[512];
+            snprintf( dxvk_path, sizeof(dxvk_path), "%s/dxvk.conf", dir_buf );
+            FILE *dxf = fopen( dxvk_path, "r" );
+            if (!dxf)
+            {
+                FILE *dxw = fopen( dxvk_path, "w" );
+                if (dxw)
+                {
+                    fputs( "# PES 2013 DXVK Optimization for Nintendo Switch\n"
+                           "d3d9.maxAvailableMemory = 512\n"
+                           "d3d9.presentInterval = 1\n"
+                           "d3d9.samplerAnisotropy = 0\n"
+                           "d3d9.maxFrameLatency = 1\n"
+                           "d3d9.deferSurfaceCreation = True\n"
+                           "d3d9.memoryTrackTest = False\n"
+                           "d3d9.dpiAware = False\n"
+                           "dxvk.numCompilerThreads = 2\n"
+                           "dxvk.useRawSsbo = True\n", dxw );
+                    fclose( dxw );
+                    log_line( "[AUTOCONFIG] created optimized dxvk.conf for PES 2013" );
+                }
+            }
+            else
+            {
+                fclose( dxf );
             }
 
             /* 4. Patch kload.dll if present to prevent recursive Direct3DCreate9 hook */
@@ -4366,13 +4394,28 @@ int main( int argc, char **argv )
             launcher_kv_load( &kv, settings_path );
             if (string_contains_ignore_case( target, "pes2013" ))
             {
-                char d3d_val[32];
-                if (!launcher_kv_get( &kv, "d3d", d3d_val, sizeof(d3d_val) ) &&
-                    !launcher_kv_get( &kv, "d3d9", d3d_val, sizeof(d3d_val) ))
+                int changed = 0;
+                char val[32];
+                if (!launcher_kv_get( &kv, "d3d", val, sizeof(val) ) &&
+                    !launcher_kv_get( &kv, "d3d9", val, sizeof(val) ))
                 {
                     launcher_kv_set( &kv, "d3d", "dxvk" );
+                    changed = 1;
+                }
+                if (!launcher_kv_get( &kv, "vsync", val, sizeof(val) ))
+                {
+                    launcher_kv_set( &kv, "vsync", "1" );
+                    changed = 1;
+                }
+                if (!launcher_kv_get( &kv, "frame-limit", val, sizeof(val) ))
+                {
+                    launcher_kv_set( &kv, "frame-limit", "60" );
+                    changed = 1;
+                }
+                if (changed)
+                {
                     launcher_kv_save( &kv, settings_path );
-                    log_line( "[AUTOCONFIG] enabled DXVK for PES 2013 in %s", settings_path );
+                    log_line( "[AUTOCONFIG] configured DXVK, vsync, and 60fps limit for PES 2013 in %s", settings_path );
                 }
             }
             if (kv.size)
