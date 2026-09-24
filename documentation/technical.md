@@ -74,6 +74,14 @@ runtime; the full package now ships the Mesa 26 one.
 - **Audio.** `winenxaudio.drv` plays through audout, for mmdevapi and DirectSound.
 - **Input.** The touchscreen, the controller as a mouse or as a keyboard with
   per-game mappings, and XInput, which sees player 1 as an Xbox 360 controller.
+- **On-screen keyboard.** `source/osk.c` is a keyboard drawn over the program
+  that sends virtual keys one at a time, with scan codes, through the display
+  driver (Minus + right stick, or `NtUserShowSoftwareKeyboard` / a text field
+  taking focus). Horizon's keyboard applet only returns a finished string, so
+  fields a game draws itself could not be edited. Its picture is copied into
+  the Vulkan swapchain image before present (`dlls/win32u/vulkan.c`), blitted
+  into the back buffer before `eglSwapBuffers` (`winnx_opengl.c`), or drawn as
+  the compositor's top layer; the controller is its while it is up.
 - **Memory.** Fixed-base games such as NFSU2 need a 32-bit address space:
   launch the NRO through a forwarder made with "32-bit, no alias", which the
   launcher can install itself and which also raises the memory limit to 2 GiB.
@@ -275,9 +283,12 @@ changes, and fails if the pinned text moves.
 - Speed. Heavy Direct3D games are limited by translated x86 code on the game's
   main thread and by Wine's Direct3D layer, rather than by the GPU.
 - Wine's first-run setup (wineboot) does not run. The package writes the COM
-  classes every staged DLL serves to `config/classes.reg`; WarCraft III's setup
-  program (`C:\WarCraft III Setup\war3-setup.exe`) registers DirectShow for its
-  movies.
+  classes every staged DLL serves to `config/classes.reg`, and the runtime runs
+  `C:\windows\autorun-setup.exe` (`tools/autorun_setup.c`) before the first
+  program on a card: the MP3 decoder under Drivers32 and DllRegisterServer for
+  the DirectShow and DMO DLLs staged, which lay out their own filter data. The
+  program waits in `run-next.txt` and starts when the runtime starts again; the
+  mark is `registry/components-1.done`, so a reset registry runs it again.
 - A 32-bit address space leaves a program about 2 GiB of addresses and caps the
   whole process at 2 GiB of memory.
 - AMD64 programs require the 39-bit application forwarder and remain
@@ -306,6 +317,7 @@ Autorun is built from these projects; each keeps its own copyright and license.
 | [libpng](http://www.libpng.org), [zlib](https://zlib.net), [bzip2](https://sourceware.org/bzip2/) | Their authors | libpng, zlib, BSD-style | Program icons and compressed data |
 | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) | Martin Storsjö; LLVM and mingw-w64 authors | Apache-2.0 with LLVM exception, mingw-w64's licenses | Building Wine's and DXVK's Windows DLLs |
 | [7-Zip](https://www.7-zip.org) | Igor Pavlov | LGPL-2.1 | `7zr.exe`, the benchmark and archive test program on the card |
+| [FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR) | Advanced Micro Devices | MIT | The Upscaling setting's FSR 1.0 (EASU and RCAS, `tools/fsr1`), which isrmicha brought to the launcher |
 | [dolphin-nx](https://github.com/NaGaa95/dolphin-nx) | NaGaa95 | GPL-2.0-or-later | The launcher's look (icon grid, program menu, settings and themes) follows its launcher; Autorun's launcher is its own code |
 
 References that shaped the port without being part of the build:

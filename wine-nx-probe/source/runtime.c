@@ -31,6 +31,7 @@
 #include "config_json.h"
 #include "pointer_cursor.h"
 #include "compositor.h"
+#include "osk.h"
 #include "std_stream_lines.h"
 #include "thread_profile.h"
 #include "dxvk_releases.h"
@@ -446,6 +447,13 @@ extern int wine_nx_nouveau_skip_clean __attribute__((weak));
  * forced virtual screen, in case that walk of the registry misbehaves. */
 int wine_nx_display_devices = 1;
 
+/* Whether the win32u Switch driver opens the on-screen keyboard by itself
+ * when an edit-like control gets keyboard focus (dlls/win32u/winnx_drv.c).
+ * keyboard-on-text-focus: false in config/settings.json turns that off (an
+ * older card's no-swkbd-auto.txt is moved into it), leaving
+ * programs to open it themselves through NtUserShowSoftwareKeyboard. */
+int wine_nx_swkbd_auto_enabled = 1;
+
 /***********************************************************************
  * Framebuffer platform hooks used by the win32u Switch display driver
  * (dlls/win32u/winnx_drv.c).  The driver renders into ordinary DIB memory;
@@ -703,6 +711,57 @@ void wine_nx_cursor_show( int visible )
     wine_nx_compositor_cursor( x, y, visible );
 }
 
+/* The floating keyboard (osk.c) draws its labels with the console's own font,
+ * which stays mapped for as long as the service is open. */
+int wine_nx_osk_font( const void **data, size_t *size )
+{
+    static int opened;
+    PlFontData font;
+
+    if (!opened && R_FAILED( plInitialize( PlServiceType_User ) )) return 0;
+    opened = 1;
+    if (R_FAILED( plGetSharedFontByType( &font, PlSharedFontType_Standard ) ) || !font.address) return 0;
+    *data = font.address;
+    *size = font.size;
+    return 1;
+}
+
+/* The controller's buttons as the floating keyboard reads them. */
+static unsigned int osk_buttons( u64 held )
+{
+    static const struct { u64 button; unsigned int osk; } map[] =
+    {
+        { HidNpadButton_Up, OSK_UP }, { HidNpadButton_Down, OSK_DOWN },
+        { HidNpadButton_Left, OSK_LEFT }, { HidNpadButton_Right, OSK_RIGHT },
+        { HidNpadButton_A, OSK_A }, { HidNpadButton_B, OSK_B }, { HidNpadButton_X, OSK_X },
+        { HidNpadButton_Y, OSK_Y }, { HidNpadButton_L, OSK_L }, { HidNpadButton_R, OSK_R },
+        { HidNpadButton_ZL, OSK_ZL }, { HidNpadButton_ZR, OSK_ZR }, { HidNpadButton_Plus, OSK_PLUS },
+        { HidNpadButton_Minus, OSK_MINUS }, { HidNpadButton_StickL, OSK_STICKL },
+        { HidNpadButton_StickR, OSK_STICKR },
+    };
+    unsigned int bits = 0, i;
+
+    for (i = 0; i < sizeof(map) / sizeof(map[0]); i++)
+        if (held & map[i].button) bits |= map[i].osk;
+    return bits;
+}
+
+/* What the controller held at the last poll, so a keyboard opened by a
+ * program (NtUserShowSoftwareKeyboard, or a text field taking focus) does not
+ * take the A that clicked the field for a key. */
+static unsigned int osk_last_held;
+
+uint64_t wine_nx_osk_clock( void )
+{
+    return armTicksToNs( armGetSystemTick() );
+}
+
+void wine_nx_keyboard_open( void )
+{
+    if (!wine_nx_osk_visible()) log_line( "[OSK] opened by the program" );
+    wine_nx_osk_show( 1, __atomic_load_n( &osk_last_held, __ATOMIC_RELAXED ) );
+}
+
 /* Buttons reported by wine_nx_pointer_poll(). */
 #define WINE_NX_POINTER_LEFT  0x1
 #define WINE_NX_POINTER_RIGHT 0x2
@@ -766,7 +825,9 @@ unsigned short wine_nx_pad_keys[WINE_NX_KEY_COUNT] =
 };
 
 /* Which of those controls are held, read by the display driver's ProcessEvents
- * (dlls/win32u/winnx_drv.c), which turns the changes into key events. */
+ * (dlls/win32u/winnx_drv.c), which turns the changes into key events. Zeroed
+ * while a program reads the controller through XInput (below), so it never
+ * competes with what the program reads there itself. */
 unsigned int wine_nx_pad_key_state;
 
 /* When a program last read the controller through XInput (xinput_unix.c). */
@@ -807,14 +868,18 @@ int wine_nx_show_keyboard( const char *header, const char *initial, char *out, s
 /* One mouse for win32u, in native 1280x720 display coordinates: the right
  * analog stick moves the cursor, A holds the left button and B the right,
  * and a touchscreen contact puts the cursor under the finger with the left
- * button held.  Returns nonzero when the position changed. */
+ * button held.  Returns nonzero when the position changed. While the floating
+ * keyboard is up (osk.c) the controller works it instead, and a finger on it
+ * is not the program's. */
 int wine_nx_pointer_poll( int *x, int *y, unsigned int *buttons )
 {
     HidTouchScreenState touch = {0};
     HidAnalogStickState stick;
     unsigned int pressed = 0;
-    u64 now, held, xinput_poll;
-    int moved, gamepad, leave = 0;
+    u64 now, held, all_held, xinput_poll;
+    int moved, gamepad, leave = 0, keyboard = 0, on_keyboard = 0;
+    static int osk_combo;
+    static u64 osk_swallowed;
 
     if (__atomic_load_n( &wine_nx_swkbd_active, __ATOMIC_ACQUIRE ))
     {
@@ -839,14 +904,56 @@ int wine_nx_pointer_poll( int *x, int *y, unsigned int *buttons )
     }
     padUpdate( &wine_nx_pad );
     now = armGetSystemTick();
-    held = padGetButtons( &wine_nx_pad );
+    held = all_held = padGetButtons( &wine_nx_pad );
     stick = padGetStickPos( &wine_nx_pad, 1 );
     /* A program reading the controller through XInput gets it whole: no keys,
      * clicks or cursor come from it meanwhile. The touchscreen still points. */
     xinput_poll = wine_nx_xinput_last_poll;
     gamepad = xinput_poll && (xinput_poll >= now || armTicksToNs( now - xinput_poll ) < 1000000000ull);
     moved = 0;
-    if (hidGetTouchScreenStates( &touch, 1 ) && touch.count > 0)
+    /* The floating keyboard: Minus and the right stick click open it, and
+     * while it is up the buttons, the d-pad and the left stick are its. The
+     * buttons held when it goes away stay away from the program until they
+     * are let go, so the Minus that closed it does not also press Tab. */
+    {
+        const int is_combo = (held & HidNpadButton_StickR) &&
+                             (held & (HidNpadButton_Minus | HidNpadButton_L | HidNpadButton_ZL));
+        unsigned int bits = osk_buttons( held );
+
+        if (is_combo && !osk_combo && !wine_nx_osk_visible())
+        {
+            wine_nx_osk_show( 1, bits );
+            log_line( "[OSK] opened with hotkey (Minus or L/ZL + right stick)" );
+        }
+        osk_combo = is_combo;
+        __atomic_store_n( &osk_last_held, bits, __ATOMIC_RELAXED );
+        if (wine_nx_osk_visible())
+        {
+            HidAnalogStickState left = padGetStickPos( &wine_nx_pad, 0 );
+            int touching = hidGetTouchScreenStates( &touch, 1 ) && touch.count > 0;
+
+            on_keyboard = wine_nx_osk_input( bits, left.x, left.y, touching,
+                                             touching ? (int)touch.touches[0].x : 0,
+                                             touching ? (int)touch.touches[0].y : 0, armTicksToNs( now ) );
+            keyboard = 1;
+            osk_swallowed = held;
+        }
+        else osk_swallowed &= held;
+        held &= ~osk_swallowed;
+        /* The window compositor draws only when told; the Vulkan and OpenGL
+         * presents look for themselves. */
+        {
+            static unsigned int drawn_generation;
+            unsigned int now_generation = wine_nx_osk_generation();
+
+            if (now_generation != drawn_generation)
+            {
+                drawn_generation = now_generation;
+                wine_nx_compositor_redraw();
+            }
+        }
+    }
+    if (!on_keyboard && hidGetTouchScreenStates( &touch, 1 ) && touch.count > 0)
     {
         if (wine_nx_device_mode[WINE_NX_DEVICE_TOUCH] == WINE_NX_POINTS)
         {
@@ -880,7 +987,7 @@ int wine_nx_pointer_poll( int *x, int *y, unsigned int *buttons )
     }
     /* The left stick points as well when it is set to, so a game played with
      * the mouse alone has both of them for it. */
-    if (!gamepad && wine_nx_device_mode[WINE_NX_DEVICE_LEFT] == WINE_NX_POINTS)
+    if (!gamepad && !keyboard && wine_nx_device_mode[WINE_NX_DEVICE_LEFT] == WINE_NX_POINTS)
     {
         HidAnalogStickState left = padGetStickPos( &wine_nx_pad, 0 );
 
@@ -889,7 +996,7 @@ int wine_nx_pointer_poll( int *x, int *y, unsigned int *buttons )
     }
     /* And the d-pad, which has no tilt to speak of: a direction held is the
      * stick pushed the whole way. */
-    if (!gamepad && wine_nx_device_mode[WINE_NX_DEVICE_DPAD] == WINE_NX_POINTS)
+    if (!gamepad && !keyboard && wine_nx_device_mode[WINE_NX_DEVICE_DPAD] == WINE_NX_POINTS)
     {
         int dpad_x = 0, dpad_y = 0;
 
@@ -953,9 +1060,7 @@ int wine_nx_pointer_poll( int *x, int *y, unsigned int *buttons )
             if (wine_nx_touch_dx < -WINE_NX_TOUCH_STEP) keys |= 1u << WINE_NX_KEY_TLEFT;
             if (wine_nx_touch_dx >  WINE_NX_TOUCH_STEP) keys |= 1u << WINE_NX_KEY_TRIGHT;
         }
-        __atomic_store_n( &wine_nx_swkbd_hotkey_state,
-                          keys & (wine_nx_pad_key_l_bit | wine_nx_pad_key_zl_bit | wine_nx_pad_key_stickr_bit), __ATOMIC_RELAXED );
-        if (gamepad) keys = 0;
+        if (gamepad || keyboard) keys = 0;
         __atomic_store_n( &wine_nx_pad_key_state, keys, __ATOMIC_RELAXED );
     }
     *x = (int)wine_nx_pointer.x;
@@ -969,7 +1074,7 @@ int wine_nx_pointer_poll( int *x, int *y, unsigned int *buttons )
         static u64 chord_since;
         const u64 chord = HidNpadButton_Plus | HidNpadButton_Minus;
 
-        if ((held & chord) != chord) chord_since = 0;
+        if ((all_held & chord) != chord) chord_since = 0;
         else if (!chord_since) chord_since = now;
         else if (armTicksToNs( now - chord_since ) >= WINE_NX_QUIT_CHORD_NS) leave = 1;
     }
@@ -1413,6 +1518,17 @@ static void runtime_report_interpreter(void)
     last_executed = executed;
     last_runs = runs;
     last_tick = now;
+}
+
+/* A file of one line, replacing what was there. */
+static int write_line( const char *path, const char *text )
+{
+    FILE *file = fopen( path, "w" );
+    int ok;
+
+    if (!file) return 0;
+    ok = fprintf( file, "%s\n", text ) > 0;
+    return !fclose( file ) && ok;
 }
 
 static int read_first_line( const char *path, char *line, size_t size )
@@ -3590,6 +3706,47 @@ static void release_thread_local_pages( void )
     tls_count = 0;
 }
 
+/* Autorun's components setup (tools/autorun_setup.c): what wineboot registers
+ * on a computer -- DirectShow, DirectX Media Objects, the MP3 decoder -- run
+ * once before the first program on a card, and again when a build raises the
+ * version. The mark is kept with the registry it wrote to, so a card whose
+ * registry was reset runs it again. */
+#define COMPONENTS_VERSION 1
+#define COMPONENTS_SETUP   RUNTIME_DIR "/drive_c/windows/autorun-setup.exe"
+#define COMPONENTS_DONE    RUNTIME_DIR "/registry/components-1.done"
+static int runtime_components_run;
+
+/* The exit code the program gave NtTerminateProcess (dlls/ntdll/unix/process.c);
+ * ~0 while it has not ended by itself. */
+unsigned int wine_nx_program_exit_code = ~0u;
+
+/* The components setup takes the program's place when it has not run on this
+ * card; the program goes to run-next.txt, which the runtime started again
+ * afterwards picks up. Only when this runtime can start itself again, so the
+ * program is not left waiting for the next time Autorun is opened. */
+static void run_components_first( char *target, size_t size )
+{
+    const char *name = strrchr( target, '/' );
+
+    if (!access( COMPONENTS_DONE, F_OK ) || access( COMPONENTS_SETUP, F_OK )) return;
+    if (!strcasecmp( target, COMPONENTS_SETUP )) return;
+    if (!envHasNextLoad() || !own_nro[0])
+    {
+        log_line( "[SETUP] Windows components not set up yet; this loader cannot start Autorun again, so "
+                  "%s goes first", name ? name + 1 : target );
+        return;
+    }
+    if (!write_line( RUNTIME_DIR "/run-next.txt", target ))
+    {
+        log_line( "[SETUP] could not write run-next.txt; the components setup waits for the next program" );
+        return;
+    }
+    log_line( "[SETUP] first program on this card: setting up Windows components before %s",
+              name ? name + 1 : target );
+    snprintf( target, size, "%s", COMPONENTS_SETUP );
+    runtime_components_run = 1;
+}
+
 static int return_to_launcher( void )
 {
     int i, still_lent = 0;
@@ -3724,7 +3881,20 @@ static int return_to_launcher( void )
      * Otherwise: close the application the way the HOME menu does, through
      * libnx's applet exit. The console goes back to the menu with no error, and
      * the launcher is one press away. */
-    if (!still_lent && runtime_reopen_launcher &&
+    if (runtime_components_run)
+    {
+        char done[64];
+
+        /* Marked whatever it answered, so a step that cannot work does not
+         * run before every program; the log and the mark say how it went. */
+        snprintf( done, sizeof(done), "version %d, exit code 0x%x", COMPONENTS_VERSION, wine_nx_program_exit_code );
+        write_line( COMPONENTS_DONE, done );
+        log_line( wine_nx_program_exit_code ? "[SETUP] Windows components set up, but a step failed (%s)"
+                                            : "[SETUP] Windows components set up (%s)", done );
+    }
+    /* A program waiting in run-next.txt (after the components setup) is started
+     * by the runtime started again, whether or not the launcher would be. */
+    if (!still_lent && (runtime_reopen_launcher || !access( RUNTIME_DIR "/run-next.txt", F_OK )) &&
         envHasNextLoad() && own_nro[0] && R_SUCCEEDED( envSetNextLoad( own_nro, own_nro ) ))
     {
         log_step( "starting this program again for the launcher" );
@@ -4036,6 +4206,8 @@ int main( int argc, char **argv )
     runtime_loader_anyway = config_bool( "hand-the-process-back-anyway", 0, "loader-anyway.txt", 0 );
     runtime_reopen_launcher = config_bool( "reopen-the-launcher-on-exit", 1, "reload-launcher.txt", 0 );
     runtime_dxvk_on_add = wine_nx_config_bool( &runtime_config, "dxvk-for-new-games", 1 );
+    wine_nx_swkbd_auto_enabled = config_bool( "keyboard-on-text-focus", 1, "no-swkbd-auto.txt", 1 );
+    log_line( "[INIT] on-screen keyboard opens on text focus: %s", wine_nx_swkbd_auto_enabled ? "yes" : "no" );
     if (runtime_config_moved && wine_nx_config_save( &runtime_config, CONFIG_FILE ))
         log_line( "[CONFIG] settings written to %s", CONFIG_FILE );
 #ifdef WINE_NX_MESA_SWITCH
@@ -4074,7 +4246,7 @@ int main( int argc, char **argv )
             remove( RUNTIME_DIR "/run-next.txt" );
             snprintf( target, sizeof(target), "%s", handoff );
             autorun = handed_over = 1;
-            log_line( "[LAUNCHER] started here by another forwarder: %s", target );
+            log_line( "[LAUNCHER] handed over in run-next.txt: %s", target );
         }
     }
     if (handed_over || (argc > 1 && argv[1] && argv[1][0]))
@@ -4116,6 +4288,7 @@ int main( int argc, char **argv )
             .verbose = wine_nx_runtime_verbose,
             .profile = runtime_profile,
             .framebuffer = !wine_nx_compositor_mode,
+            .swkbd_auto = wine_nx_swkbd_auto_enabled,
         };
         int chosen;
 
@@ -4153,6 +4326,8 @@ int main( int argc, char **argv )
         runtime_reopen_launcher = options.reopen_launcher;
         wine_nx_config_set_bool( &runtime_config, "dxvk-for-new-games", options.dxvk_on_add );
         runtime_dxvk_on_add = options.dxvk_on_add;
+        wine_nx_config_set_bool( &runtime_config, "keyboard-on-text-focus", options.swkbd_auto );
+        wine_nx_swkbd_auto_enabled = options.swkbd_auto;
         wine_nx_config_save( &runtime_config, CONFIG_FILE );
         if (!chosen)
         {
@@ -4163,6 +4338,8 @@ int main( int argc, char **argv )
         }
         autorun = 1;
     }
+
+    run_components_first( target, sizeof(target) );
 
     /* From here a thread may be asked to end; this one comes back here. */
     if (setjmp( quit_jump )) return return_to_launcher();
@@ -4178,6 +4355,7 @@ int main( int argc, char **argv )
         runtime_dxvk_hud = 0;
 #ifdef WINE_NX_MESA_SWITCH
         wine_nx_graphics_configure( 0, 1 );
+        wine_nx_upscaling_configure( 0, 0.4f );
 #endif
 #ifdef WINE_NX_LSFG
         wine_nx_lsfg_configure( 0, 1, 1 );
@@ -4209,6 +4387,7 @@ int main( int argc, char **argv )
             runtime_dxvk = settings.dxvk;
             runtime_dxvk_hud = settings.dxvk_hud;
             wine_nx_graphics_configure( launcher_frame_limits[settings.frame_limit], settings.vsync );
+            wine_nx_upscaling_configure( settings.upscaling, launcher_sharpness_values[settings.upscaling_sharpness] );
 #ifdef WINE_NX_LSFG
             wine_nx_lsfg_configure( settings.lsfg_enabled, settings.lsfg_performance, settings.lsfg_flow );
 #endif
