@@ -50,6 +50,7 @@ static struct
     struct wine_nx_layer *layers;
     unsigned int stack_serial;
     int cursor_x, cursor_y, cursor_visible;
+    int show_fps;
     unsigned int frames;
 } comp =
 {
@@ -222,6 +223,30 @@ void wine_nx_compositor_cursor( int x, int y, int visible )
         comp.cursor_x = x;
         comp.cursor_y = y;
         comp.cursor_visible = visible;
+        request_frame();
+    }
+    pthread_mutex_unlock( &comp.lock );
+}
+
+#ifdef __SWITCH__
+#include <switch.h>
+static inline uint64_t compositor_now_ns( void ) { return armTicksToNs( armGetSystemTick() ); }
+#else
+#include <time.h>
+static inline uint64_t compositor_now_ns( void )
+{
+    struct timespec ts;
+    clock_gettime( CLOCK_MONOTONIC, &ts );
+    return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
+}
+#endif
+
+void wine_nx_compositor_show_fps( int show )
+{
+    pthread_mutex_lock( &comp.lock );
+    if (comp.show_fps != !!show)
+    {
+        comp.show_fps = !!show;
         request_frame();
     }
     pthread_mutex_unlock( &comp.lock );
@@ -483,6 +508,7 @@ static void *presenter_thread( void *arg )
                 drawn[count++] = keyboard;
             }
         }
+        int show_fps = comp.show_fps;
         cursor_x = comp.cursor_x;
         cursor_y = comp.cursor_y;
         cursor_visible = comp.cursor_visible;
@@ -497,6 +523,24 @@ static void *presenter_thread( void *arg )
             pthread_mutex_destroy( &layer->pixels_lock );
             free( layer );
         }
+        if (show_fps)
+        {
+            static uint64_t last_fps_tick = 0;
+            static int fps_count = 0;
+            static int current_fps = 0;
+            uint64_t now = compositor_now_ns();
+            fps_count++;
+            if (!last_fps_tick) last_fps_tick = now;
+            else if (now - last_fps_tick >= 500000000ull)
+            {
+                current_fps = (int)((double)fps_count * 1000000000.0 / (double)(now - last_fps_tick) + 0.5);
+                fps_count = 0;
+                last_fps_tick = now;
+            }
+            gl.fps = current_fps;
+        }
+        else gl.fps = -1;
+
         for (j = 0; j < count; j++) upload_layer( &gl, drawn[j] );
         compositor_gl_draw( &gl, quads, count, cursor_x, cursor_y, cursor_visible );
         backend->swap();

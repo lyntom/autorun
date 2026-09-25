@@ -56,6 +56,7 @@ void wine_nx_layer_place( struct wine_nx_layer *layer, int x, int y, int width, 
 void wine_nx_compositor_restack( struct wine_nx_layer **layers, int count );
 
 void wine_nx_compositor_cursor( int x, int y, int visible );
+void wine_nx_compositor_show_fps( int show );
 /* Draw the screen again: something over the windows, the floating keyboard,
  * changed. */
 void wine_nx_compositor_redraw( void );

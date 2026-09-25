@@ -76,7 +76,7 @@ u32 __nx_exception_ignoredebug = 1;
 #ifdef WINE_NX_AMD64
 #define WINE_NX_RUNTIME_BUILD "nx-amd64-box64-3"
 #elif defined(WINE_NX_BOX64_DYNAREC)
-#define WINE_NX_RUNTIME_BUILD "nx-wow64-dynarec-232"
+#define WINE_NX_RUNTIME_BUILD "nx-wow64-dynarec-233"
 #else
 #define WINE_NX_RUNTIME_BUILD "nx-wow64-console-11"
 #endif
@@ -4407,6 +4407,7 @@ int main( int argc, char **argv )
 
         runtime_dxvk = 0;
         runtime_dxvk_hud = 0;
+        wine_nx_compositor_show_fps( 0 );
 #ifdef WINE_NX_MESA_SWITCH
         wine_nx_graphics_configure( 0, 1 );
         wine_nx_upscaling_configure( 0, 0.4f );
@@ -4542,6 +4543,8 @@ int main( int argc, char **argv )
 #else
                       settings.dxvk ? "Wine (DXVK needs the Vulkan runtime)" : "Wine" );
 #endif
+                runtime_dxvk_hud = settings.dxvk_hud;
+                wine_nx_compositor_show_fps( runtime_dxvk_hud > 0 );
             }
         }
     }

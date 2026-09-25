@@ -382,9 +382,22 @@ static inline void launcher_settings_read( const struct launcher_kv *kv, struct 
         memcpy( settings->dxvk_version, value, strlen( value ) + 1 );
     settings->own_controls = launcher_setting_state( kv, "own-controls" );
     settings->dxvk_hud = 0;
-    if (launcher_kv_get( kv, "dxvk-hud", value, sizeof(value) ))
+    if (launcher_kv_get( kv, "dxvk-hud", value, sizeof(value) ) ||
+        launcher_kv_get( kv, "hud", value, sizeof(value) ))
+    {
         for (int i = 1; i < LAUNCHER_HUD_COUNT; i++)
             if (!strcasecmp( value, launcher_hud_values[i] )) settings->dxvk_hud = i;
+        if (!strcmp( value, "1" ) || !strcasecmp( value, "on" ) || !strcasecmp( value, "true" )) settings->dxvk_hud = 1;
+        else if (!strcmp( value, "0" ) || !strcasecmp( value, "off" ) || !strcasecmp( value, "false" )) settings->dxvk_hud = 0;
+    }
+    if (launcher_kv_get( kv, "fps", value, sizeof(value) ) ||
+        launcher_kv_get( kv, "show-fps", value, sizeof(value) ))
+    {
+        if (!strcmp( value, "1" ) || !strcasecmp( value, "on" ) || !strcasecmp( value, "true" ) || !strcasecmp( value, "fps" ))
+            settings->dxvk_hud = settings->dxvk_hud ? settings->dxvk_hud : 1;
+        else if (!strcmp( value, "0" ) || !strcasecmp( value, "off" ) || !strcasecmp( value, "false" ))
+            settings->dxvk_hud = 0;
+    }
     settings->frame_limit = 0;
     if (launcher_kv_get( kv, "frame-limit", value, sizeof(value) ))
         for (int i = 1; i < LAUNCHER_FRAME_LIMIT_COUNT; i++)
@@ -453,6 +466,7 @@ static inline int launcher_settings_write( struct launcher_kv *kv, const struct 
            launcher_kv_set( kv, "vkd3d-version", settings->vkd3d_version[0] ? settings->vkd3d_version : NULL ) &&
            launcher_kv_set( kv, "dxvk-version", settings->dxvk_version[0] ? settings->dxvk_version : NULL ) &&
            launcher_kv_set( kv, "dxvk-hud", settings->dxvk_hud ? launcher_hud_values[settings->dxvk_hud] : NULL ) &&
+           launcher_kv_set( kv, "fps", settings->dxvk_hud ? "1" : NULL ) &&
            launcher_kv_set( kv, "frame-limit", settings->frame_limit ?
                             launcher_frame_limit_labels[settings->frame_limit] : NULL ) &&
            launcher_kv_set( kv, "vsync", settings->vsync ? NULL : "0" ) &&

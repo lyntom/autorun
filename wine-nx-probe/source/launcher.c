@@ -2432,6 +2432,12 @@ static int program_menu( struct launcher *l, struct program *p, char *target, si
                   state_text( p->settings.framebuffer, l->options->framebuffer, "Framebuffer", "Compositor",
                               buffer, sizeof(buffer) ) );
 
+        ADD_ROW( ROW_DXVK_HUD, SECTION_GRAPHICS, "Show FPS / HUD",
+                 "Shows real-time FPS on screen during gameplay. Supports OpenGL Compositor, DXVK, and Vulkan games. "
+                 "FPS shows frame rate. Compact/Full shows extra DXVK and system stats." );
+        row->kind = UI_ROW_DROPDOWN;
+        snprintf( row->value, sizeof(row->value), "%s", launcher_hud_labels[p->settings.dxvk_hud] );
+
         if (l->options->vulkan && (x86 || x64))
         {
             ADD_ROW( ROW_D3D9, SECTION_GRAPHICS, "Direct3D renderer",
@@ -2463,12 +2469,6 @@ static int program_menu( struct launcher *l, struct program *p, char *target, si
             else if (dxvk_root[0])
                 snprintf( row->value, sizeof(row->value), "Latest (%s)", dxvk_root );
             else snprintf( row->value, sizeof(row->value), "Latest" );
-            ADD_ROW( ROW_DXVK_HUD, SECTION_GRAPHICS, "DXVK HUD",
-                     "FPS shows only the frame rate. Compact shows the DirectX version, FPS and frame times. "
-                     "Full also shows the DXVK version, GPU, video memory and shader compiler activity. "
-                     "The DXVK HUD does not cover VKD3D's D3D12 rendering." );
-            row->kind = UI_ROW_DROPDOWN;
-            snprintf( row->value, sizeof(row->value), "%s", launcher_hud_labels[p->settings.dxvk_hud] );
 
             ADD_ROW( ROW_FRAME_LIMIT, SECTION_GRAPHICS, "Frame rate limit",
                      "Limits real game frames in Vulkan, DXVK and VKD3D. Off adds no cap. "
