@@ -5,6 +5,7 @@
 
 #include "compositor_gl.h"
 #include "pointer_cursor.h"
+#include "fps_overlay.h"
 
 /* One quad for every window, its corners from a four-vertex buffer and the
  * rectangle and texture coordinates as uniforms. */
@@ -112,7 +113,9 @@ int compositor_gl_init( struct compositor_gl *comp, const struct compositor_gl_f
     }
     compositor_gl_upload( comp, &comp->cursor, POINTER_CURSOR_W, POINTER_CURSOR_H, cursor, POINTER_CURSOR_W,
                           0, 0, POINTER_CURSOR_W, POINTER_CURSOR_H );
-    comp->last_drawn_fps = -999;
+
+    memset( &comp->fps_tex, 0, sizeof(comp->fps_tex) );
+    comp->last_fps_val = -999;
     comp->fps = -1;
 
     if ((error = gl->GetError()) != GL_NO_ERROR)
@@ -195,127 +198,6 @@ static void draw_quad( struct compositor_gl *comp, const struct compositor_gl_te
     gl->DrawArrays( GL_TRIANGLE_STRIP, 0, 4 );
 }
 
-static const uint8_t font5x7[128][5] = {
-    ['0'] = {0x3e, 0x51, 0x49, 0x45, 0x3e},
-    ['1'] = {0x00, 0x42, 0x7f, 0x40, 0x00},
-    ['2'] = {0x42, 0x61, 0x51, 0x49, 0x46},
-    ['3'] = {0x21, 0x41, 0x45, 0x4b, 0x31},
-    ['4'] = {0x18, 0x14, 0x12, 0x7f, 0x10},
-    ['5'] = {0x27, 0x45, 0x45, 0x45, 0x39},
-    ['6'] = {0x3c, 0x4a, 0x49, 0x49, 0x30},
-    ['7'] = {0x01, 0x71, 0x09, 0x05, 0x03},
-    ['8'] = {0x36, 0x49, 0x49, 0x49, 0x36},
-    ['9'] = {0x06, 0x49, 0x49, 0x29, 0x1e},
-    [':'] = {0x00, 0x36, 0x36, 0x00, 0x00},
-    ['F'] = {0x7f, 0x09, 0x09, 0x01, 0x01},
-    ['P'] = {0x7f, 0x09, 0x09, 0x09, 0x06},
-    ['S'] = {0x26, 0x49, 0x49, 0x49, 0x32},
-    [' '] = {0x00, 0x00, 0x00, 0x00, 0x00},
-};
-
-#define FPS_TEX_W 104
-#define FPS_TEX_H 26
-
-static void draw_fps_overlay( struct compositor_gl *comp, int fps )
-{
-    const struct compositor_gl_funcs *gl = comp->gl;
-
-    if (fps < 0) return;
-    if (fps > 999) fps = 999;
-
-    if (comp->last_drawn_fps != fps || !comp->fps_tex.name)
-    {
-        uint32_t pixels[FPS_TEX_W * FPS_TEX_H];
-        char text[16];
-        int len, i, col, row, tx, ty, px, py;
-        int start_x = 8;
-        int start_y = 5;
-
-        snprintf( text, sizeof(text), "%d FPS", fps );
-        len = strlen( text );
-
-        for (py = 0; py < FPS_TEX_H; py++)
-        {
-            for (px = 0; px < FPS_TEX_W; px++)
-            {
-                int corner = ((px == 0 || px == FPS_TEX_W - 1) && (py == 0 || py == FPS_TEX_H - 1));
-                if (corner) pixels[py * FPS_TEX_W + px] = 0;
-                else if (px == 0 || px == FPS_TEX_W - 1 || py == 0 || py == FPS_TEX_H - 1)
-                    pixels[py * FPS_TEX_W + px] = 0xd0202020u;
-                else
-                    pixels[py * FPS_TEX_W + px] = 0xb0101010u;
-            }
-        }
-
-        tx = start_x;
-        for (i = 0; i < len; i++)
-        {
-            char c = text[i];
-            if ((unsigned char)c < 128)
-            {
-                for (col = 0; col < 5; col++)
-                {
-                    uint8_t bits = font5x7[(unsigned char)c][col];
-                    for (row = 0; row < 7; row++)
-                    {
-                        if (bits & (1 << row))
-                        {
-                            int gx = tx + col * 2;
-                            int gy = start_y + row * 2;
-                            for (ty = 0; ty < 2; ty++)
-                            {
-                                for (px = 0; px < 2; px++)
-                                {
-                                    int x = gx + px;
-                                    int y = gy + ty;
-                                    if (x >= 0 && x < FPS_TEX_W - 1 && y >= 0 && y < FPS_TEX_H - 1)
-                                        pixels[(y + 1) * FPS_TEX_W + (x + 1)] = 0xff000000u;
-                                }
-                            }
-                        }
-                    }
-                }
-                for (col = 0; col < 5; col++)
-                {
-                    uint8_t bits = font5x7[(unsigned char)c][col];
-                    for (row = 0; row < 7; row++)
-                    {
-                        if (bits & (1 << row))
-                        {
-                            int gx = tx + col * 2;
-                            int gy = start_y + row * 2;
-                            for (ty = 0; ty < 2; ty++)
-                            {
-                                for (px = 0; px < 2; px++)
-                                {
-                                    int x = gx + px;
-                                    int y = gy + ty;
-                                    if (x >= 0 && x < FPS_TEX_W && y >= 0 && y < FPS_TEX_H)
-                                        pixels[y * FPS_TEX_W + x] = 0xff00ff40u;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            tx += 13;
-        }
-
-        compositor_gl_upload( comp, &comp->fps_tex, FPS_TEX_W, FPS_TEX_H, pixels, FPS_TEX_W,
-                              0, 0, FPS_TEX_W, FPS_TEX_H );
-        comp->last_drawn_fps = fps;
-    }
-
-    if (comp->fps_tex.name)
-    {
-        gl->Enable( GL_BLEND );
-        gl->BlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
-        gl->Uniform1i( comp->window_uniform, 0 );
-        draw_quad( comp, &comp->fps_tex, 16, 16, FPS_TEX_W, FPS_TEX_H, 0, 0 );
-        gl->Disable( GL_BLEND );
-    }
-}
-
 void compositor_gl_draw( struct compositor_gl *comp, const struct compositor_gl_quad *quads, int count,
                          int cursor_x, int cursor_y, int cursor_visible )
 {
@@ -351,6 +233,24 @@ void compositor_gl_draw( struct compositor_gl *comp, const struct compositor_gl_
 
     if (comp->fps >= 0)
     {
-        draw_fps_overlay( comp, comp->fps );
+        if (comp->last_fps_val != comp->fps)
+        {
+            uint32_t buf[WINE_NX_FPS_W * WINE_NX_FPS_H];
+            wine_nx_fps_render_badge( comp->fps, buf, 1 );
+            compositor_gl_upload( comp, &comp->fps_tex, WINE_NX_FPS_W, WINE_NX_FPS_H, buf, WINE_NX_FPS_W,
+                                  0, 0, WINE_NX_FPS_W, WINE_NX_FPS_H );
+            comp->last_fps_val = comp->fps;
+        }
+
+        if (comp->fps_tex.name)
+        {
+            gl->Disable( GL_DEPTH_TEST );
+            gl->Disable( GL_SCISSOR_TEST );
+            gl->Enable( GL_BLEND );
+            gl->BlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+            gl->Uniform1i( comp->window_uniform, 0 );
+            draw_quad( comp, &comp->fps_tex, 16, 16, WINE_NX_FPS_W, WINE_NX_FPS_H, 0, 0 );
+            gl->Disable( GL_BLEND );
+        }
     }
 }

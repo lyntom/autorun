@@ -542,6 +542,35 @@ static void *presenter_thread( void *arg )
         else gl.fps = -1;
 
         for (j = 0; j < count; j++) upload_layer( &gl, drawn[j] );
+        {
+            extern int wine_nx_show_fps;
+            if (wine_nx_show_fps)
+            {
+                static struct timespec last_fps_time;
+                static int fps_count = 0;
+                static int current_fps = 0;
+                struct timespec now;
+                clock_gettime( CLOCK_MONOTONIC, &now );
+                if (last_fps_time.tv_sec == 0 && last_fps_time.tv_nsec == 0)
+                {
+                    last_fps_time = now;
+                    current_fps = 60;
+                }
+                fps_count++;
+                uint64_t diff_ms = (uint64_t)(now.tv_sec - last_fps_time.tv_sec) * 1000 + (now.tv_nsec - last_fps_time.tv_nsec) / 1000000;
+                if (diff_ms >= 500)
+                {
+                    current_fps = (int)((double)fps_count * 1000.0 / (double)diff_ms + 0.5);
+                    fps_count = 0;
+                    last_fps_time = now;
+                }
+                gl.fps = current_fps;
+            }
+            else
+            {
+                gl.fps = -1;
+            }
+        }
         compositor_gl_draw( &gl, quads, count, cursor_x, cursor_y, cursor_visible );
         backend->swap();
 

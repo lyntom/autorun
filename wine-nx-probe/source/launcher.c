@@ -670,6 +670,9 @@ static void save_program_settings( struct launcher *l, struct program *p )
     char path[768], folder[768];
     int ready = 1;
 
+    if (p->settings.address_space < 0 && launcher_program_address_space( p->path ) == LAUNCHER_ADDRESS_LOW)
+        p->settings.address_space = 1;
+
     if (launcher_settings_on_usb( p->path ))
     {
         runtime_file( l, "program-settings", folder, sizeof(folder) );

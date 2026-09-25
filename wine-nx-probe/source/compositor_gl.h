@@ -94,7 +94,7 @@ struct compositor_gl
     GLint rect_uniform, src_uniform, window_uniform, image_uniform;
     struct compositor_gl_texture cursor;
     struct compositor_gl_texture fps_tex;
-    int last_drawn_fps;
+    int last_fps_val;
     int fps;
     char error[256];  /* why compositor_gl_init failed */
 };

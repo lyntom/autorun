@@ -209,9 +209,9 @@ enum {
 static const int launcher_frame_limits[] = { 0, 30, 40, 45, 60, 75, 90, 120 };
 static const char *const launcher_frame_limit_labels[] =
     { "Off", "30", "40", "45", "60", "75", "90", "120" };
-static const char *const launcher_hud_labels[] = { "Disabled", "FPS", "Compact", "Full" };
+static const char *const launcher_hud_labels[] = { "Disabled", "FPS", "FPS (Compact)", "FPS (Full)" };
 static const char *const launcher_hud_values[] =
-    { "0", "fps", "api,fps,frametimes", "version,api,devinfo,fps,memory,frametimes,compiler" };
+    { "0", "fps", "fps", "fps" };
 static const char *const launcher_lsfg_flow_labels[] = { "12.5%", "25%", "50%" };
 static const char *const launcher_lsfg_flow_values[] = { "0.125", "0.25", "0.5" };
 static const char *const launcher_upscaling_labels[] = { "Off (Bilinear)", "FSR 1.0", "Integer" };
@@ -236,6 +236,14 @@ static inline int launcher_dxvk_config( const struct launcher_settings *settings
                               launcher_frame_limits[settings->frame_limit],
                               launcher_frame_limits[settings->frame_limit] );
         if (extra < 0 || (size_t)extra >= size - length) return 0;
+        length += extra;
+    }
+    if (settings->dxvk_hud > 0 && settings->dxvk_hud < LAUNCHER_HUD_COUNT)
+    {
+        int extra = snprintf( out + length, size - length, "dxvk.hud = %s\n",
+                              launcher_hud_values[settings->dxvk_hud] );
+        if (extra < 0 || (size_t)extra >= size - length) return 0;
+        length += extra;
     }
     return 1;
 }
@@ -389,6 +397,7 @@ static inline void launcher_settings_read( const struct launcher_kv *kv, struct 
             if (!strcasecmp( value, launcher_hud_values[i] )) settings->dxvk_hud = i;
         if (!strcmp( value, "1" ) || !strcasecmp( value, "on" ) || !strcasecmp( value, "true" )) settings->dxvk_hud = 1;
         else if (!strcmp( value, "0" ) || !strcasecmp( value, "off" ) || !strcasecmp( value, "false" )) settings->dxvk_hud = 0;
+        else if (settings->dxvk_hud == 0) settings->dxvk_hud = 1;
     }
     if (launcher_kv_get( kv, "fps", value, sizeof(value) ) ||
         launcher_kv_get( kv, "show-fps", value, sizeof(value) ))

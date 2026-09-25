@@ -76,7 +76,7 @@ u32 __nx_exception_ignoredebug = 1;
 #ifdef WINE_NX_AMD64
 #define WINE_NX_RUNTIME_BUILD "nx-amd64-box64-3"
 #elif defined(WINE_NX_BOX64_DYNAREC)
-#define WINE_NX_RUNTIME_BUILD "nx-wow64-dynarec-233"
+#define WINE_NX_RUNTIME_BUILD "nx-wow64-dynarec-237"
 #else
 #define WINE_NX_RUNTIME_BUILD "nx-wow64-console-11"
 #endif
@@ -433,6 +433,7 @@ int wine_nx_runtime_verbose;
 static int runtime_profile;
 static int runtime_dxvk;
 static int runtime_dxvk_hud;
+int wine_nx_show_fps;
 static char runtime_vkd3d_version[32];
 static char runtime_dxvk_version[32];
 
@@ -4407,7 +4408,7 @@ int main( int argc, char **argv )
 
         runtime_dxvk = 0;
         runtime_dxvk_hud = 0;
-        wine_nx_compositor_show_fps( 0 );
+        wine_nx_show_fps = 0;
 #ifdef WINE_NX_MESA_SWITCH
         wine_nx_graphics_configure( 0, 1 );
         wine_nx_upscaling_configure( 0, 0.4f );
@@ -4544,8 +4545,13 @@ int main( int argc, char **argv )
                       settings.dxvk ? "Wine (DXVK needs the Vulkan runtime)" : "Wine" );
 #endif
                 runtime_dxvk_hud = settings.dxvk_hud;
-                wine_nx_compositor_show_fps( runtime_dxvk_hud > 0 );
+                wine_nx_show_fps = (settings.dxvk_hud > 0);
             }
+        }
+        if (config_bool( "fps", 0, "fps.txt", 0 ) || config_bool( "hud", 0, "hud.txt", 0 ))
+        {
+            wine_nx_show_fps = 1;
+            if (!runtime_dxvk_hud) runtime_dxvk_hud = 1;
         }
     }
 
@@ -4557,6 +4563,8 @@ int main( int argc, char **argv )
     log_line( "[INIT] verbose traces %s (verbose.txt)", wine_nx_runtime_verbose ? "on" : "off" );
     log_line( "[INIT] profiler %s (profile.txt)", runtime_profile ? "on" : "off" );
     log_line( "[INIT] windows shown by %s", wine_nx_compositor_mode ? "the OpenGL compositor" : "the framebuffer" );
+    log_line( "[INIT] FPS overlay %s", wine_nx_show_fps ? "on (dynamic: Compositor/OpenGL/DXVK)" : "off" );
+
     /* After the launcher, where X may have turned it on or off. */
     if (runtime_profile)
     {

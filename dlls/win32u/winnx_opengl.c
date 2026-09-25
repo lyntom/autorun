@@ -28,6 +28,7 @@
 #include "wine/opengl_driver.h"
 #include "wine/debug.h"
 #include "../../wine-nx-probe/source/osk.h"
+#include "../../wine-nx-probe/source/fps_overlay.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(wgl);
 
@@ -148,6 +149,30 @@ static PFN_glFramebufferTexture2D p_glFramebufferTexture2D;
 static PFN_glBlitFramebuffer p_glBlitFramebuffer;
 static PFN_glIsFramebuffer p_glIsFramebuffer;
 static PFN_glBindBuffer p_glBindBuffer;
+static PFN_glCheckFramebufferStatus p_glCheckFramebufferStatus;
+
+static void nx_resolve_fbo_funcs( void )
+{
+    if (!p_glGenFramebuffers)
+        p_glGenFramebuffers = funcs->p_glGenFramebuffers ? funcs->p_glGenFramebuffers : (void *)funcs->p_eglGetProcAddress( "glGenFramebuffers" );
+    if (!p_glBindFramebuffer)
+        p_glBindFramebuffer = funcs->p_glBindFramebuffer ? funcs->p_glBindFramebuffer : (void *)funcs->p_eglGetProcAddress( "glBindFramebuffer" );
+    if (!p_glFramebufferTexture2D)
+        p_glFramebufferTexture2D = funcs->p_glFramebufferTexture2D ? funcs->p_glFramebufferTexture2D : (void *)funcs->p_eglGetProcAddress( "glFramebufferTexture2D" );
+    if (!p_glIsFramebuffer)
+        p_glIsFramebuffer = funcs->p_glIsFramebuffer ? funcs->p_glIsFramebuffer : (void *)funcs->p_eglGetProcAddress( "glIsFramebuffer" );
+    if (!p_glBindBuffer)
+        p_glBindBuffer = funcs->p_glBindBuffer ? funcs->p_glBindBuffer : (void *)funcs->p_eglGetProcAddress( "glBindBuffer" );
+    if (!p_glCheckFramebufferStatus)
+        p_glCheckFramebufferStatus = funcs->p_glCheckFramebufferStatus ? funcs->p_glCheckFramebufferStatus : (void *)funcs->p_eglGetProcAddress( "glCheckFramebufferStatus" );
+    if (!p_glBlitFramebuffer)
+    {
+        if (funcs->p_glBlitFramebuffer) p_glBlitFramebuffer = funcs->p_glBlitFramebuffer;
+        else if (funcs->p_glBlitFramebufferEXT) p_glBlitFramebuffer = funcs->p_glBlitFramebufferEXT;
+        else p_glBlitFramebuffer = (void *)funcs->p_eglGetProcAddress( "glBlitFramebuffer" );
+        if (!p_glBlitFramebuffer) p_glBlitFramebuffer = (void *)funcs->p_eglGetProcAddress( "glBlitFramebufferEXT" );
+    }
+}
 
 static void nx_osk_draw( struct opengl_drawable *base )
 {
@@ -164,19 +189,10 @@ static void nx_osk_draw( struct opengl_drawable *base )
         !funcs->p_eglQuerySurface( egl->display, base->surface, EGL_HEIGHT, &height ) ||
         !wine_nx_osk_frame( width, height, &frame ) || !(context = funcs->p_eglGetCurrentContext()))
         return;
-    if (!p_glBlitFramebuffer)
-    {
-        p_glGenFramebuffers = (void *)funcs->p_eglGetProcAddress( "glGenFramebuffers" );
-        p_glBindFramebuffer = (void *)funcs->p_eglGetProcAddress( "glBindFramebuffer" );
-        p_glFramebufferTexture2D = (void *)funcs->p_eglGetProcAddress( "glFramebufferTexture2D" );
-        p_glIsFramebuffer = (void *)funcs->p_eglGetProcAddress( "glIsFramebuffer" );
-        p_glBindBuffer = (void *)funcs->p_eglGetProcAddress( "glBindBuffer" );
-        if (!p_glGenFramebuffers || !p_glBindFramebuffer || !p_glFramebufferTexture2D || !p_glIsFramebuffer ||
-            !p_glBindBuffer)
-            return;
-        p_glBlitFramebuffer = (void *)funcs->p_eglGetProcAddress( "glBlitFramebuffer" );
-        if (!p_glBlitFramebuffer) return;
-    }
+    nx_resolve_fbo_funcs();
+    if (!p_glBlitFramebuffer || !p_glGenFramebuffers || !p_glBindFramebuffer ||
+        !p_glFramebufferTexture2D || !p_glIsFramebuffer || !p_glBindBuffer)
+        return;
     for (i = 0; i < ARRAY_SIZE(nx_osk_gl) && !osk; i++)
         if (nx_osk_gl[i].context == context) osk = &nx_osk_gl[i];
     if (!osk)
@@ -253,6 +269,186 @@ static void nx_osk_draw( struct opengl_drawable *base )
     funcs->p_glPixelStorei( GL_UNPACK_ALIGNMENT, alignment );
 }
 
+extern int wine_nx_show_fps __attribute__((weak));
+
+struct nx_fps_gl
+{
+    EGLContext context;
+    GLuint texture;
+    GLuint framebuffer;
+    int last_fps_val;
+    unsigned long long last_tick;
+    unsigned int frame_count;
+    int current_fps;
+};
+
+static struct nx_fps_gl nx_fps_slots[4];
+static unsigned int nx_fps_next;
+
+static void nx_fps_draw( struct opengl_drawable *base )
+{
+    struct nx_fps_gl *fps = NULL;
+    EGLint width = 0, height = 0;
+    EGLContext context;
+    GLint read_fb = 0, draw_fb = 0, texture = 0, unpack_buffer = 0;
+    GLint row_length = 0, skip_pixels = 0, skip_rows = 0, alignment = 4;
+    GLint prev_read_buf = GL_NONE, prev_draw_buf = GL_NONE, prev_active_tex = GL_TEXTURE0;
+    GLboolean prev_colormask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
+    GLboolean scissor = GL_FALSE, srgb = GL_FALSE, has_pbo = GL_FALSE;
+    unsigned long long now, diff;
+    unsigned int i;
+    int badge_w, badge_h = 28;
+
+    if (!&wine_nx_show_fps || !wine_nx_show_fps) return;
+    if (!funcs || !egl || !egl->display || !base || !base->surface) return;
+    if (!funcs->p_eglQuerySurface( egl->display, base->surface, EGL_WIDTH, &width ) ||
+        !funcs->p_eglQuerySurface( egl->display, base->surface, EGL_HEIGHT, &height ) ||
+        width <= 32 || height <= 32 ||
+        !(context = funcs->p_eglGetCurrentContext()))
+        return;
+
+    nx_resolve_fbo_funcs();
+    if (!p_glBlitFramebuffer || !p_glGenFramebuffers || !p_glBindFramebuffer ||
+        !p_glFramebufferTexture2D || !p_glIsFramebuffer)
+        return;
+
+    for (i = 0; i < ARRAY_SIZE(nx_fps_slots) && !fps; i++)
+        if (nx_fps_slots[i].context == context) fps = &nx_fps_slots[i];
+    if (!fps)
+    {
+        fps = &nx_fps_slots[nx_fps_next++ % ARRAY_SIZE(nx_fps_slots)];
+        memset( fps, 0, sizeof(*fps) );
+        fps->context = context;
+        fps->last_fps_val = -999;
+    }
+
+    /* Track real-time OpenGL frame rate */
+    now = horizon_interrupt_time();
+    if (!fps->last_tick)
+    {
+        fps->last_tick = now;
+        fps->current_fps = 60;
+    }
+    fps->frame_count++;
+    diff = now - fps->last_tick;
+    /* 500ms in 100ns units = 5,000,000 */
+    if (diff >= 5000000ULL)
+    {
+        fps->current_fps = (int)((fps->frame_count * 10000000ULL + diff / 2) / diff);
+        fps->frame_count = 0;
+        fps->last_tick = now;
+    }
+
+    /* Save state before mutating */
+    if (funcs->p_glActiveTexture)
+    {
+        funcs->p_glGetIntegerv( GL_ACTIVE_TEXTURE, &prev_active_tex );
+        funcs->p_glActiveTexture( GL_TEXTURE0 );
+    }
+
+    if (funcs->p_glGetBooleanv && funcs->p_glColorMask)
+    {
+        funcs->p_glGetBooleanv( GL_COLOR_WRITEMASK, prev_colormask );
+        funcs->p_glColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
+    }
+
+    funcs->p_glGetIntegerv( GL_READ_FRAMEBUFFER_BINDING, &read_fb );
+    funcs->p_glGetIntegerv( GL_DRAW_FRAMEBUFFER_BINDING, &draw_fb );
+    funcs->p_glGetIntegerv( GL_TEXTURE_BINDING_2D, &texture );
+
+    if (funcs->p_glReadBuffer) funcs->p_glGetIntegerv( GL_READ_BUFFER, &prev_read_buf );
+    if (funcs->p_glDrawBuffer) funcs->p_glGetIntegerv( GL_DRAW_BUFFER, &prev_draw_buf );
+
+    if (p_glBindBuffer)
+    {
+        funcs->p_glGetIntegerv( GL_PIXEL_UNPACK_BUFFER_BINDING, &unpack_buffer );
+        if (unpack_buffer)
+        {
+            has_pbo = GL_TRUE;
+            p_glBindBuffer( GL_PIXEL_UNPACK_BUFFER, 0 );
+        }
+    }
+
+    funcs->p_glGetIntegerv( GL_UNPACK_ROW_LENGTH, &row_length );
+    funcs->p_glGetIntegerv( GL_UNPACK_SKIP_PIXELS, &skip_pixels );
+    funcs->p_glGetIntegerv( GL_UNPACK_SKIP_ROWS, &skip_rows );
+    funcs->p_glGetIntegerv( GL_UNPACK_ALIGNMENT, &alignment );
+    scissor = funcs->p_glIsEnabled( GL_SCISSOR_TEST );
+    srgb = funcs->p_glIsEnabled ? funcs->p_glIsEnabled( GL_FRAMEBUFFER_SRGB ) : GL_FALSE;
+
+    if (!fps->texture || !funcs->p_glIsTexture( fps->texture ) || !p_glIsFramebuffer( fps->framebuffer ))
+    {
+        funcs->p_glGenTextures( 1, &fps->texture );
+        p_glGenFramebuffers( 1, &fps->framebuffer );
+        fps->last_fps_val = -999;
+    }
+
+    funcs->p_glBindTexture( GL_TEXTURE_2D, fps->texture );
+    funcs->p_glPixelStorei( GL_UNPACK_ROW_LENGTH, 0 );
+    funcs->p_glPixelStorei( GL_UNPACK_SKIP_PIXELS, 0 );
+    funcs->p_glPixelStorei( GL_UNPACK_SKIP_ROWS, 0 );
+    funcs->p_glPixelStorei( GL_UNPACK_ALIGNMENT, 4 );
+
+    badge_w = wine_nx_fps_badge_width( fps->current_fps );
+
+    if (fps->last_fps_val != fps->current_fps)
+    {
+        uint32_t buf[WINE_NX_FPS_W * WINE_NX_FPS_H];
+        wine_nx_fps_render_badge( fps->current_fps, buf, 0 ); /* BGRA */
+        funcs->p_glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA8, WINE_NX_FPS_W, WINE_NX_FPS_H, 0, GL_BGRA,
+                               GL_UNSIGNED_BYTE, buf );
+        funcs->p_glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+        funcs->p_glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+        funcs->p_glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+        funcs->p_glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+        fps->last_fps_val = fps->current_fps;
+    }
+
+    /* Bind source FBO */
+    p_glBindFramebuffer( GL_READ_FRAMEBUFFER, fps->framebuffer );
+    p_glFramebufferTexture2D( GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fps->texture, 0 );
+    if (funcs->p_glReadBuffer) funcs->p_glReadBuffer( GL_COLOR_ATTACHMENT0 );
+
+    /* Bind destination window framebuffer (0) */
+    p_glBindFramebuffer( GL_DRAW_FRAMEBUFFER, 0 );
+    if (funcs->p_glDrawBuffer) funcs->p_glDrawBuffer( GL_BACK );
+
+    if (scissor) funcs->p_glDisable( GL_SCISSOR_TEST );
+    if (srgb) funcs->p_glDisable( GL_FRAMEBUFFER_SRGB );
+
+    if (!p_glCheckFramebufferStatus ||
+        p_glCheckFramebufferStatus( GL_READ_FRAMEBUFFER ) == GL_FRAMEBUFFER_COMPLETE)
+    {
+        /* Destination: (16, height - 16 - badge_h) to (16 + badge_w, height - 16).
+         * Source: invert Y (badge_h to 0) to flip texture onto screen. */
+        p_glBlitFramebuffer( 0, badge_h, badge_w, 0,
+                             16, height - 16 - badge_h,
+                             16 + badge_w, height - 16,
+                             GL_COLOR_BUFFER_BIT, GL_NEAREST );
+    }
+
+    if (scissor) funcs->p_glEnable( GL_SCISSOR_TEST );
+    if (srgb) funcs->p_glEnable( GL_FRAMEBUFFER_SRGB );
+
+    if (funcs->p_glReadBuffer && prev_read_buf != GL_NONE) funcs->p_glReadBuffer( prev_read_buf );
+    if (funcs->p_glDrawBuffer && prev_draw_buf != GL_NONE) funcs->p_glDrawBuffer( prev_draw_buf );
+    if (funcs->p_glColorMask)
+        funcs->p_glColorMask( prev_colormask[0], prev_colormask[1], prev_colormask[2], prev_colormask[3] );
+
+    p_glBindFramebuffer( GL_READ_FRAMEBUFFER, read_fb );
+    p_glBindFramebuffer( GL_DRAW_FRAMEBUFFER, draw_fb );
+    funcs->p_glBindTexture( GL_TEXTURE_2D, texture );
+
+    if (has_pbo) p_glBindBuffer( GL_PIXEL_UNPACK_BUFFER, unpack_buffer );
+
+    funcs->p_glPixelStorei( GL_UNPACK_ROW_LENGTH, row_length );
+    funcs->p_glPixelStorei( GL_UNPACK_SKIP_PIXELS, skip_pixels );
+    funcs->p_glPixelStorei( GL_UNPACK_SKIP_ROWS, skip_rows );
+    funcs->p_glPixelStorei( GL_UNPACK_ALIGNMENT, alignment );
+
+    if (funcs->p_glActiveTexture) funcs->p_glActiveTexture( prev_active_tex );
+}
+
 static BOOL nx_drawable_swap( struct opengl_drawable *base )
 {
     extern unsigned int wine_nx_gl_calls;
@@ -260,6 +456,7 @@ static BOOL nx_drawable_swap( struct opengl_drawable *base )
     BOOL ret;
 
     nx_osk_draw( base );
+    nx_fps_draw( base );
     start = horizon_interrupt_time();
     ret = funcs->p_eglSwapBuffers( egl->display, base->surface );
     nx_last_swap_tick = horizon_interrupt_time();
@@ -268,6 +465,7 @@ static BOOL nx_drawable_swap( struct opengl_drawable *base )
     __atomic_add_fetch( &wine_nx_gl_swaps, 1, __ATOMIC_RELAXED );
     return ret;
 }
+
 
 void wine_nx_gl_check_present( void )
 {
@@ -476,6 +674,23 @@ static struct opengl_driver_funcs nx_driver_funcs =
     .p_context_create = nx_context_create,
 };
 
+static BOOL (*p_orig_context_destroy)( void *context );
+
+static BOOL nx_context_destroy( void *context )
+{
+    unsigned int i;
+    for (i = 0; i < ARRAY_SIZE(nx_fps_slots); i++)
+    {
+        if (nx_fps_slots[i].context == (EGLContext)context)
+        {
+            memset( &nx_fps_slots[i], 0, sizeof(nx_fps_slots[i]) );
+            nx_fps_slots[i].last_fps_val = -999;
+        }
+    }
+    if (p_orig_context_destroy) return p_orig_context_destroy( context );
+    return TRUE;
+}
+
 UINT wine_nx_drv_OpenGLInit( UINT version, const struct opengl_funcs *opengl_funcs,
                              const struct opengl_driver_funcs **driver_funcs )
 {
@@ -491,7 +706,8 @@ UINT wine_nx_drv_OpenGLInit( UINT version, const struct opengl_funcs *opengl_fun
     nx_driver_funcs.p_init_pixel_formats = (*driver_funcs)->p_init_pixel_formats;
     nx_driver_funcs.p_describe_pixel_format = (*driver_funcs)->p_describe_pixel_format;
     nx_driver_funcs.p_init_wgl_extensions = (*driver_funcs)->p_init_wgl_extensions;
-    nx_driver_funcs.p_context_destroy = (*driver_funcs)->p_context_destroy;
+    p_orig_context_destroy = (*driver_funcs)->p_context_destroy;
+    nx_driver_funcs.p_context_destroy = nx_context_destroy;
     nx_driver_funcs.p_make_current = (*driver_funcs)->p_make_current;
     nx_driver_funcs.p_pbuffer_create = (*driver_funcs)->p_pbuffer_create;
     nx_driver_funcs.p_pbuffer_updated = (*driver_funcs)->p_pbuffer_updated;
