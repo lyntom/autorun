@@ -346,7 +346,8 @@ static void wine_nx_restack_layers( void )
     for (hwnd = get_window_relative( get_desktop_window(), GW_CHILD ); hwnd && count < (int)ARRAY_SIZE(layers);
          hwnd = get_window_relative( hwnd, GW_HWNDNEXT ))
     {
-        if ((entry = find_surface_entry_locked( hwnd, FALSE )) && entry->layer) layers[count++] = entry->layer;
+        if ((entry = find_surface_entry_locked( hwnd, FALSE )) && entry->visible && entry->layer)
+            layers[count++] = entry->layer;
     }
     wine_nx_compositor_restack( layers, count );
     pthread_mutex_unlock( &wine_nx_surface_entries_mutex );
@@ -564,23 +565,57 @@ UINT wine_nx_drv_UpdateDisplayDevices( const struct gdi_device_manager *dm, void
     RECT rc = { 0, 0, WINE_NX_SCREEN_W, WINE_NX_SCREEN_H };
     struct pci_id pci_id = { 0 };
     struct gdi_monitor monitor = { .rc_monitor = rc, .rc_work = rc };
-    DEVMODEW mode =
-    {
-        .dmSize   = sizeof(mode),
-        .dmFields = DM_DISPLAYORIENTATION | DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL |
-                    DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY,
-        .dmBitsPerPel = 32, .dmPelsWidth = WINE_NX_SCREEN_W, .dmPelsHeight = WINE_NX_SCREEN_H,
-        .dmDisplayFrequency = 60,
+    static const struct {
+        UINT width, height, bpp;
+    } supported_modes[] = {
+        /* Native 720p first (default current mode) */
+        { 1280, 720, 32 },
+        { 1280, 720, 24 },
+        { 1280, 720, 16 },
+        /* 1080p for docked / high-res */
+        { 1920, 1080, 32 },
+        { 1920, 1080, 16 },
+        /* Standard classic PC resolutions for retro / DirectDraw games */
+        { 1024, 768, 32 },
+        { 1024, 768, 24 },
+        { 1024, 768, 16 },
+        { 800,  600, 32 },
+        { 800,  600, 24 },
+        { 800,  600, 16 },
+        { 640,  480, 32 },
+        { 640,  480, 24 },
+        { 640,  480, 16 },
+        /* SXGA */
+        { 1280, 1024, 32 },
+        { 1280, 1024, 16 },
+        { 1280, 960, 32 },
+        { 1280, 960, 16 },
     };
+    DEVMODEW modes[ARRAY_SIZE(supported_modes)];
     UINT dpi = NtUserGetSystemDpiForProcess( NULL );
-    DEVMODEW current = mode;
+    DEVMODEW current;
+    UINT i;
+
+    for (i = 0; i < ARRAY_SIZE(supported_modes); i++)
+    {
+        memset( &modes[i], 0, sizeof(DEVMODEW) );
+        modes[i].dmSize = sizeof(DEVMODEW);
+        modes[i].dmFields = DM_DISPLAYORIENTATION | DM_PELSWIDTH | DM_PELSHEIGHT |
+                            DM_BITSPERPEL | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY;
+        modes[i].dmPelsWidth = supported_modes[i].width;
+        modes[i].dmPelsHeight = supported_modes[i].height;
+        modes[i].dmBitsPerPel = supported_modes[i].bpp;
+        modes[i].dmDisplayFrequency = 60;
+    }
+
+    current = modes[0];
+    current.dmFields |= DM_POSITION;
 
     dm->add_gpu( "Wine NX GPU", &pci_id, NULL, param );
     dm->add_source( "Default", source_flags, dpi, param );
     dm->add_monitor( &monitor, param );
-    current.dmFields |= DM_POSITION;
-    dm->add_modes( &current, 1, &mode, param );
-    nxdrv_trace( "[NXDRV] UpdateDisplayDevices -> %dx%d", WINE_NX_SCREEN_W, WINE_NX_SCREEN_H, 0, 0 );
+    dm->add_modes( &current, ARRAY_SIZE(modes), modes, param );
+    nxdrv_trace( "[NXDRV] UpdateDisplayDevices -> %dx%d (modes: %d)", WINE_NX_SCREEN_W, WINE_NX_SCREEN_H, (int)ARRAY_SIZE(modes), 0 );
     return STATUS_SUCCESS;
 }
 

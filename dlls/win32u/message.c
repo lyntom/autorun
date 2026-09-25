@@ -3475,6 +3475,9 @@ static inline LONGLONG get_driver_check_time(void)
 /* check for driver events if we detect that the app is not properly consuming messages */
 static inline void check_for_driver_events(void)
 {
+#ifdef __SWITCH__
+    wine_nx_gl_check_present();
+#endif
     if (get_user_thread_info()->last_driver_time != get_driver_check_time())
     {
         flush_window_surfaces( FALSE );

@@ -56,6 +56,10 @@ extern void register_window_surface( struct window_surface *old,
                                      struct window_surface *new );
 extern void *window_surface_get_color( struct window_surface *surface, BITMAPINFO *info );
 
+#ifdef __SWITCH__
+extern void wine_nx_gl_check_present( void );
+#endif
+
 extern int force_present_to_surface( const RECT *win_rect );
 
 /* defwnd.c */

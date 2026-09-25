@@ -37,6 +37,7 @@
 #include "winternl.h"
 
 #include "ntgdi_private.h"
+#include "win32u_private.h"
 #include "wine/debug.h"
 #include "wine/unixlib.h"
 
@@ -1007,7 +1008,8 @@ BOOL WINAPI NtGdiUnrealizeObject( HGDIOBJ obj )
  */
 BOOL WINAPI NtGdiFlush(void)
 {
-    return TRUE;  /* FIXME */
+    flush_window_surfaces( TRUE );
+    return TRUE;
 }
 
 

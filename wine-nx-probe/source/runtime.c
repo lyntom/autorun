@@ -76,7 +76,7 @@ u32 __nx_exception_ignoredebug = 1;
 #ifdef WINE_NX_AMD64
 #define WINE_NX_RUNTIME_BUILD "nx-amd64-box64-3"
 #elif defined(WINE_NX_BOX64_DYNAREC)
-#define WINE_NX_RUNTIME_BUILD "nx-wow64-dynarec-223"
+#define WINE_NX_RUNTIME_BUILD "nx-wow64-dynarec-232"
 #else
 #define WINE_NX_RUNTIME_BUILD "nx-wow64-console-11"
 #endif
@@ -308,8 +308,10 @@ static void log_line( const char *fmt, ... )
     line[len++] = '\n';
     line[len] = 0;
 
-    /* Syscall traces stay in the file: each console update presents a frame. */
-    if (on_main && strncmp( line, "[SYSCALL]", 9 )) fputs( line, stdout );
+    /* Don't let high-frequency syscall traces flood the SD card log */
+    if (!strncmp( line, "[SYSCALL]", 9 )) return;
+
+    if (on_main) fputs( line, stdout );
 
     if (log_file && log_lock_bounded())
     {
@@ -2378,6 +2380,10 @@ static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *t
     chars += strlen( dos_path ) + 1;
     chars += strlen( nt_path ) + 1;
     chars += sizeof(runtime_environment) + strlen( graphics_path ) + strlen( dxvk_hud ) - 1;
+    const char *env_overrides = getenv( "WINEDLLOVERRIDES" );
+    if (env_overrides) chars += strlen( env_overrides ) + 32;
+    const char *env_d3d = getenv( "WINE_D3D_CONFIG" );
+    if (env_d3d) chars += strlen( env_d3d ) + 64;
     size = sizeof(*params) + chars * sizeof(WCHAR);
 
     if (!(params = calloc( 1, size ))) return NULL;
@@ -2413,6 +2419,28 @@ static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *t
         {
             for (i = 0; i < 5; i++) *cursor++ = (unsigned char)*value++;
             for (i = 0; graphics_path[i]; i++) *cursor++ = (unsigned char)graphics_path[i];
+        }
+        if (!strncmp( entry, "WINEDLLOVERRIDES=", 17 ))
+        {
+            const char *ov = getenv( "WINEDLLOVERRIDES" );
+            if (ov)
+            {
+                for (i = 0; i < 17; i++) *cursor++ = (unsigned char)*value++;
+                while (*ov) *cursor++ = (unsigned char)*ov++;
+                *cursor++ = 0;
+                continue;
+            }
+        }
+        if (!strncmp( entry, "WINE_D3D_CONFIG=", 16 ))
+        {
+            const char *cfg = getenv( "WINE_D3D_CONFIG" );
+            if (cfg)
+            {
+                for (i = 0; i < 16; i++) *cursor++ = (unsigned char)*value++;
+                while (*cfg) *cursor++ = (unsigned char)*cfg++;
+                *cursor++ = 0;
+                continue;
+            }
         }
         do *cursor++ = (unsigned char)*value; while (*value++);
     }
@@ -4424,6 +4452,43 @@ int main( int argc, char **argv )
             if (settings.verbose >= 0) wine_nx_runtime_verbose = settings.verbose;
             if (settings.profile >= 0) runtime_profile = settings.profile;
             if (settings.framebuffer >= 0) wine_nx_compositor_mode = !settings.framebuffer;
+            if (settings.dll_overrides[0])
+            {
+                if (string_contains_ignore_case( target, "diner" ) &&
+                    string_contains_ignore_case( target, "dash" ) &&
+                    strstr( settings.dll_overrides, "opengl32" ))
+                {
+                    log_line( "[OVERRIDE] ignored opengl32 override for Diner Dash" );
+                }
+                else
+                {
+                    char buf[256];
+                    const char *cur = getenv( "WINEDLLOVERRIDES" );
+                    snprintf( buf, sizeof(buf), "%s%s%s", cur ? cur : "", (cur && cur[0]) ? ";" : "", settings.dll_overrides );
+                    setenv( "WINEDLLOVERRIDES", buf, 1 );
+                    log_line( "[OVERRIDE] WINEDLLOVERRIDES=%s", buf );
+                }
+            }
+            if (string_contains_ignore_case( target, "diner" ) &&
+                string_contains_ignore_case( target, "dash" ))
+            {
+                if (!settings.d3d_config[0])
+                {
+                    snprintf( settings.d3d_config, sizeof(settings.d3d_config), "renderer=gdi" );
+                    log_line( "[AUTOCONFIG] applied renderer=gdi for Diner Dash" );
+                }
+            }
+            if (settings.d3d_config[0])
+            {
+                char buf[256];
+                const char *cur = getenv( "WINE_D3D_CONFIG" );
+                if (cur && cur[0])
+                    snprintf( buf, sizeof(buf), "%s,%s", settings.d3d_config, cur );
+                else
+                    snprintf( buf, sizeof(buf), "%s,cs_spin_count=64,explicit_buffer_flush=1", settings.d3d_config );
+                setenv( "WINE_D3D_CONFIG", buf, 1 );
+                log_line( "[CONFIG] WINE_D3D_CONFIG=%s", buf );
+            }
 #ifdef WINE_NX_MESA_SWITCH
             runtime_dxvk = settings.dxvk;
             runtime_dxvk_hud = settings.dxvk_hud;

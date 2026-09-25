@@ -54,8 +54,11 @@ struct nx_gl_drawable
  * of a window share the surface rather than each asking for the screen. */
 static pthread_mutex_t nx_screen_mutex = PTHREAD_MUTEX_INITIALIZER;
 static EGLSurface nx_screen_surface;
+static struct opengl_drawable *nx_screen_drawable;
 static unsigned int nx_screen_refs;
 static int nx_screen_format;
+static unsigned int nx_last_swapped_calls;
+static unsigned long long nx_last_swap_tick;
 
 static struct nx_gl_drawable *impl_from_opengl_drawable( struct opengl_drawable *base )
 {
@@ -101,6 +104,7 @@ static void nx_drawable_destroy( struct opengl_drawable *base )
     {
         surface = nx_screen_surface;
         nx_screen_surface = NULL;
+        nx_screen_drawable = NULL;
     }
     pthread_mutex_unlock( &nx_screen_mutex );
 
@@ -109,11 +113,14 @@ static void nx_drawable_destroy( struct opengl_drawable *base )
     wine_nx_gl_release_window();
 }
 
+static BOOL nx_drawable_swap( struct opengl_drawable *base );
+
 static void nx_drawable_flush( struct opengl_drawable *base, UINT flags )
 {
     TRACE( "drawable %s, flags %#x\n", debugstr_opengl_drawable( base ), flags );
 
     if (flags & GL_FLUSH_INTERVAL) funcs->p_eglSwapInterval( egl->display, abs( base->interval ) );
+    if (flags & (GL_FLUSH_PRESENT | GL_FLUSH_FORCE_SWAP)) nx_drawable_swap( base );
 }
 
 /* Frames presented and the time inside eglSwapBuffers, for [PROGRESS]. */
@@ -248,15 +255,43 @@ static void nx_osk_draw( struct opengl_drawable *base )
 
 static BOOL nx_drawable_swap( struct opengl_drawable *base )
 {
+    extern unsigned int wine_nx_gl_calls;
     unsigned long long start;
     BOOL ret;
 
     nx_osk_draw( base );
     start = horizon_interrupt_time();
     ret = funcs->p_eglSwapBuffers( egl->display, base->surface );
-    __atomic_add_fetch( &wine_nx_gl_swap_time, horizon_interrupt_time() - start, __ATOMIC_RELAXED );
+    nx_last_swap_tick = horizon_interrupt_time();
+    nx_last_swapped_calls = __atomic_load_n( &wine_nx_gl_calls, __ATOMIC_RELAXED );
+    __atomic_add_fetch( &wine_nx_gl_swap_time, nx_last_swap_tick - start, __ATOMIC_RELAXED );
     __atomic_add_fetch( &wine_nx_gl_swaps, 1, __ATOMIC_RELAXED );
     return ret;
+}
+
+void wine_nx_gl_check_present( void )
+{
+    extern unsigned int wine_nx_gl_calls;
+    unsigned int current_calls;
+    unsigned long long now;
+    struct opengl_drawable *drawable;
+
+    if (!nx_screen_surface) return;
+
+    current_calls = __atomic_load_n( &wine_nx_gl_calls, __ATOMIC_RELAXED );
+    if (current_calls == nx_last_swapped_calls) return;
+
+    now = horizon_interrupt_time();
+    /* Throttle to ~60 FPS (16 ms = 160000 in 100ns units) */
+    if (now - nx_last_swap_tick < 160000) return;
+
+    pthread_mutex_lock( &nx_screen_mutex );
+    drawable = nx_screen_drawable;
+    if (drawable && nx_screen_surface && funcs && egl && egl->display)
+    {
+        nx_drawable_swap( drawable );
+    }
+    pthread_mutex_unlock( &nx_screen_mutex );
 }
 
 static const struct opengl_drawable_funcs nx_drawable_funcs =
@@ -303,6 +338,7 @@ static BOOL nx_surface_create( HWND hwnd, BOOL raw, int format, struct opengl_dr
         gl->base.surface = nx_screen_surface;
         gl->screen = TRUE;
         nx_screen_refs++;
+        nx_screen_drawable = &gl->base;
         pthread_mutex_unlock( &nx_screen_mutex );
         TRACE( "hwnd %p: sharing the screen surface %p\n", hwnd, nx_screen_surface );
         *drawable = &gl->base;
@@ -337,6 +373,7 @@ static BOOL nx_surface_create( HWND hwnd, BOOL raw, int format, struct opengl_dr
     nx_screen_surface = gl->base.surface;
     nx_screen_format = format;
     nx_screen_refs = 1;
+    nx_screen_drawable = &gl->base;
     pthread_mutex_unlock( &nx_screen_mutex );
 
     TRACE( "created drawable %s with EGL surface %p\n", debugstr_opengl_drawable( &gl->base ), gl->base.surface );
@@ -464,4 +501,10 @@ UINT wine_nx_drv_OpenGLInit( UINT version, const struct opengl_funcs *opengl_fun
     return STATUS_SUCCESS;
 }
 
+BOOL wine_nx_gl_has_screen_surface( void )
+{
+    return nx_screen_surface != NULL;
+}
+
 #endif /* __SWITCH__ */
+

@@ -780,6 +780,9 @@ void flush_window_surfaces( BOOL idle )
         window_surface_flush( surface );
 done:
     pthread_mutex_unlock( &surfaces_lock );
+#ifdef __SWITCH__
+    wine_nx_gl_check_present();
+#endif
 }
 
 /***********************************************************************
@@ -823,6 +826,20 @@ static void dump_rdw_flags(UINT flags)
 int force_present_to_surface( const RECT *win_rect )
 {
     static int cached = -1;
+
+#ifdef __SWITCH__
+    extern int wine_nx_compositor_enabled( void ) __attribute__((weak));
+    extern BOOL wine_nx_gl_has_screen_surface( void ) __attribute__((weak));
+
+    if (&wine_nx_compositor_enabled && wine_nx_compositor_enabled())
+    {
+        /* If 2D compositor is active and OpenGL is not currently owning the screen surface,
+         * always force present to surface so GDI/Director/BitBlt windows get a valid surface
+         * and their client regions are not clipped out. */
+        if (!&wine_nx_gl_has_screen_surface || !wine_nx_gl_has_screen_surface())
+            return 1;
+    }
+#endif
 
     if (cached == -1)
     {
@@ -1324,6 +1341,9 @@ static INT release_dc( HWND hwnd, HDC hdc, BOOL end_paint )
             set_dce_flags( dce->hdc, DCHF_DISABLEDC );
         }
         ret = TRUE;
+#ifdef __SWITCH__
+        flush_window_surfaces( FALSE );
+#endif
     }
     user_unlock();
 

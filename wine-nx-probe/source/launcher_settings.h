@@ -196,6 +196,8 @@ struct launcher_settings
     /* What the program needs of the address space (launcher_catalog.h):
      * -1 read it from the program itself, 0 any, 1 the low 4 GB. */
     int address_space;
+    char dll_overrides[128];
+    char d3d_config[128];
 };
 
 enum {
@@ -416,6 +418,18 @@ static inline void launcher_settings_read( const struct launcher_kv *kv, struct 
         if (!strcasecmp( value, "32-bit" ) || !strcmp( value, "32" )) settings->address_space = 1;
         else if (!strcasecmp( value, "any" )) settings->address_space = 0;
     }
+    if (!launcher_kv_get( kv, "dll-overrides", settings->dll_overrides, sizeof(settings->dll_overrides) ) &&
+        !launcher_kv_get( kv, "overrides", settings->dll_overrides, sizeof(settings->dll_overrides) ))
+        settings->dll_overrides[0] = 0;
+    if (!launcher_kv_get( kv, "d3d-config", settings->d3d_config, sizeof(settings->d3d_config) ) &&
+        !launcher_kv_get( kv, "wined3d-config", settings->d3d_config, sizeof(settings->d3d_config) ))
+    {
+        char rend[32];
+        if (launcher_kv_get( kv, "renderer", rend, sizeof(rend) ))
+            snprintf( settings->d3d_config, sizeof(settings->d3d_config), "renderer=%s", rend );
+        else
+            settings->d3d_config[0] = 0;
+    }
 }
 
 /* Store settings, leaving out what matches the global settings. */
@@ -452,7 +466,9 @@ static inline int launcher_settings_write( struct launcher_kv *kv, const struct 
                             launcher_sharpness_labels[settings->upscaling_sharpness] : NULL ) &&
            launcher_kv_set( kv, "own-controls", states[settings->own_controls + 1] ) &&
            launcher_kv_set( kv, "address-space", settings->address_space < 0 ? NULL :
-                                                 settings->address_space ? "32-bit" : "any" );
+                                                 settings->address_space ? "32-bit" : "any" ) &&
+           launcher_kv_set( kv, "dll-overrides", settings->dll_overrides[0] ? settings->dll_overrides : NULL ) &&
+           launcher_kv_set( kv, "d3d-config", settings->d3d_config[0] ? settings->d3d_config : NULL );
 }
 
 #endif

@@ -1339,6 +1339,8 @@ static void swapchain_gdi_frontbuffer_updated(struct wined3d_swapchain *swapchai
             draw_rect.right - draw_rect.left, draw_rect.bottom - draw_rect.top,
             src_dc, draw_rect.left, draw_rect.top, SRCCOPY);
 
+    GdiFlush();
+
     SetRectEmpty(&swapchain->front_buffer_update);
 }
 

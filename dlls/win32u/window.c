@@ -4846,7 +4846,9 @@ static BOOL show_window( HWND hwnd, INT cmd )
     /* Horizon currently presents one desktop application without a window
      * manager.  Maximize its ownerless overlapped top-level window while
      * leaving popups, dialogs and child controls under application control. */
-    nx_fullscreen = !(style & (WS_CHILD | WS_POPUP)) && !get_window_relative( hwnd, GW_OWNER );
+    nx_fullscreen = !(style & WS_CHILD) && !get_window_relative( hwnd, GW_OWNER ) &&
+                    (!(style & WS_POPUP) || (get_window_long( hwnd, GWL_EXSTYLE ) & WS_EX_APPWINDOW) ||
+                     (style & (WS_MINIMIZEBOX | WS_MAXIMIZEBOX)) || (NtUserGetWindowTextLength( hwnd ) > 0));
     if (!(style & WS_CHILD))
     {
         nx_window_trace( "[NXWIN] thread %04x shows hwnd %p with %d (style %#x, visible %d%s)",

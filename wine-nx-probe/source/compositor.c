@@ -408,7 +408,7 @@ static void *presenter_thread( void *arg )
                 dead = layer;
                 continue;
             }
-            if (layer->visible_width && layer->visible_height) count++;
+            if (layer->visible_width > 0 && layer->visible_height > 0 && layer->z > 0) count++;
             link = &layer->next;
         }
         if (count + 1 > capacity)  /* and the keyboard */
@@ -423,7 +423,7 @@ static void *presenter_thread( void *arg )
         count = 0;
         for (layer = comp.layers; layer && count < capacity; layer = layer->next)
         {
-            if (!layer->visible_width || !layer->visible_height) continue;
+            if (layer->visible_width <= 0 || layer->visible_height <= 0 || layer->z <= 0) continue;
             /* Insertion by z, bottom first; equal ones keep the list's order. */
             for (i = count; i > 0 && drawn[i - 1]->z > layer->z; i--) drawn[i] = drawn[i - 1];
             drawn[i] = layer;
@@ -432,11 +432,13 @@ static void *presenter_thread( void *arg )
         for (i = 0; i < count; i++)
         {
             layer = drawn[i];
+            int vw = layer->visible_width;
+            int vh = layer->visible_height;
             quads[i].texture = &layer->texture;
             quads[i].x = layer->x;
             quads[i].y = layer->y;
-            quads[i].width = layer->visible_width < layer->width ? layer->visible_width : layer->width;
-            quads[i].height = layer->visible_height < layer->height ? layer->visible_height : layer->height;
+            quads[i].width = vw < layer->width ? vw : layer->width;
+            quads[i].height = vh < layer->height ? vh : layer->height;
             quads[i].src_x = quads[i].src_y = 0;
         }
         if (count < capacity && wine_nx_osk_frame( comp.width, comp.height, &osk ))
